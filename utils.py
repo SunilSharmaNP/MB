@@ -1,3 +1,4 @@
+# utils.py - Complete utility functions for AdvancedMergeBot
 import asyncio
 import json
 import os
@@ -5,6 +6,9 @@ import re
 import time
 from typing import Dict, Any, Optional, Union
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_human_readable_size(size_bytes: int) -> str:
     """Convert bytes to human readable format with emojis."""
@@ -130,6 +134,7 @@ async def get_video_properties(file_path: str) -> Optional[Dict[str, Any]]:
         }
         
     except Exception as e:
+        logger.error(f"Error getting video properties: {e}")
         return None
 
 def format_duration(seconds: float) -> str:
@@ -176,37 +181,6 @@ def get_file_type(filename: str) -> str:
     else:
         return 'unknown'
 
-class UserSettings:
-    """Enhanced user settings management."""
-    
-    def __init__(self, user_id: int, name: str):
-        self.user_id = user_id
-        self.name = name
-        self.merge_mode = 1  # Default to video merge
-        self.upload_as_doc = False
-        self.auto_thumbnail = True
-        self.allowed = False
-        self.banned = False
-        self.premium = False
-        
-        # Load from database
-        self._load_from_db()
-    
-    def _load_from_db(self):
-        """Load user settings from database."""
-        # This would connect to your database
-        # For now, using defaults
-        pass
-    
-    def save(self):
-        """Save settings to database."""
-        # Implementation for database save
-        pass
-    
-    def set(self):
-        """Alias for save method."""
-        self.save()
-
 def create_progress_text(
     title: str,
     filename: str,
@@ -238,3 +212,135 @@ def create_progress_text(
         text += f"\n💡 **Info:** {extra_info}"
     
     return text.strip()
+
+def validate_url(url: str) -> tuple[bool, str]:
+    """Validate download URL."""
+    from urllib.parse import urlparse
+    
+    if not url or not isinstance(url, str):
+        return False, "Invalid URL format"
+    
+    if len(url) > 2048:
+        return False, "URL too long"
+
+    parsed_url = urlparse(url)
+    if not all([parsed_url.scheme, parsed_url.netloc]):
+        return False, "URL must have a scheme (http/https) and network location."
+    
+    if parsed_url.scheme not in ('http', 'https'):
+        return False, "URL scheme must be http or https."
+    
+    return True, "Valid"
+
+def get_filename_from_url(url: str, fallback_name: str = None) -> str:
+    """Extract filename from URL with fallbacks."""
+    from urllib.parse import urlparse, unquote
+    
+    try:
+        parsed_url = urlparse(url)
+        filename = os.path.basename(parsed_url.path)
+        filename = unquote(filename)
+        
+        if '?' in filename:
+            filename = filename.split('?')[0]
+
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        filename = filename.strip(' .').strip()
+        filename = re.sub(r'[\x00-\x1f\x7f]', '', filename)
+
+        if not filename or len(filename) < 5:
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = fallback_name or f"download_{timestamp_str}.bin"
+
+        if '.' not in filename:
+            filename += '.bin'
+
+        if len(filename) > 200:
+            name, ext = os.path.splitext(filename)
+            filename = name[:(200 - len(ext))] + ext
+
+        return filename
+    except Exception as e:
+        logger.error(f"Error extracting filename: {e}")
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return fallback_name or f"download_error_{timestamp_str}.bin"
+
+class UserSettings:
+    """Enhanced user settings management."""
+    
+    def __init__(self, user_id: int, name: str):
+        self.user_id = user_id
+        self.name = name
+        self.merge_mode = 1  # Default to video merge
+        self.upload_as_doc = False
+        self.auto_thumbnail = True
+        self.allowed = False
+        self.banned = False
+        self.premium = False
+        
+        # Load from database (would be implemented with actual database)
+        self._load_from_db()
+    
+    def _load_from_db(self):
+        """Load user settings from database."""
+        # This would connect to your database
+        # For now, using defaults
+        pass
+    
+    def save(self):
+        """Save settings to database."""
+        # Implementation for database save
+        pass
+    
+    def set(self):
+        """Alias for save method."""
+        self.save()
+
+# Global progress tracking
+last_edit_time = {}
+
+async def smart_progress_editor(status_message, text: str, throttle_seconds: float = 2.0):
+    """Smart progress editor with throttling to avoid flood limits."""
+    if not status_message or not hasattr(status_message, 'chat'):
+        return
+    
+    message_key = f"{status_message.chat.id}_{status_message.id}"
+    now = time.time()
+    last_time = last_edit_time.get(message_key, 0)
+    
+    if (now - last_time) > throttle_seconds:
+        try:
+            await status_message.edit_text(text, parse_mode="markdown")
+            last_edit_time[message_key] = now
+        except Exception as e:
+            logger.debug(f"Progress update failed: {e}")
+
+# Utility functions for file operations
+def ensure_directory(directory_path: str):
+    """Ensure directory exists."""
+    os.makedirs(directory_path, exist_ok=True)
+
+def cleanup_files(file_paths: list):
+    """Clean up temporary files."""
+    for file_path in file_paths:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logger.warning(f"Could not remove file {file_path}: {e}")
+
+def get_file_extension(filename: str) -> str:
+    """Get file extension in lowercase."""
+    return filename.split('.')[-1].lower() if '.' in filename else ''
+
+def is_video_file(filename: str) -> bool:
+    """Check if file is a video file."""
+    return get_file_type(filename) == 'video'
+
+def is_audio_file(filename: str) -> bool:
+    """Check if file is an audio file."""
+    return get_file_type(filename) == 'audio'
+
+def is_subtitle_file(filename: str) -> bool:
+    """Check if file is a subtitle file."""
+    return get_file_type(filename) == 'subtitle'
