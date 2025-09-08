@@ -1,20 +1,41 @@
-FROM ubuntu:latest
+# Use official Python runtime as base image
+FROM python:3.11-slim
 
-WORKDIR /usr/src/mergebot
-RUN chmod 777 /usr/src/mergebot
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get -y update && apt-get -y upgrade && apt-get install apt-utils -y && \
-    apt-get install -y python3 python3-pip git \
-    p7zip-full p7zip-rar xz-utils wget curl pv jq \
-    ffmpeg unzip neofetch mediainfo
+# Set working directory
+WORKDIR /app
 
-# RUN curl https://rclone.org/install.sh | bash
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    wget \
+    curl \
+    git \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
 
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
 
-RUN chmod +x start.sh
+# Create necessary directories
+RUN mkdir -p downloads temp userdata logs session
 
-CMD ["bash","start.sh"]
+# Set proper permissions
+RUN chmod +x /app && \
+    chmod -R 755 downloads temp userdata logs session
+
+
+# Run the bot
+CMD ["python", "bot.py"]
