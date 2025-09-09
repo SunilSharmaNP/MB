@@ -22,7 +22,7 @@ async def smart_progress_editor(status_message, text: str):
     """Smart progress editor with throttling."""
     if not status_message or not hasattr(status_message, 'chat'):
         return
-        
+    
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
     last_time = last_edit_time.get(message_key, 0)
@@ -96,7 +96,6 @@ async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
             'has_video': True,
             'has_audio': audio_stream is not None,
             'has_subtitles': len(subtitle_streams) > 0,
-            
             # Video properties
             'width': int(video_stream['width']),
             'height': int(video_stream['height']),
@@ -104,18 +103,15 @@ async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
             'video_codec': video_codec,
             'pixel_format': pixel_format,
             'profile': profile,
-            
             # Audio properties
             'audio_codec': audio_codec,
             'audio_sample_rate': audio_sample_rate,
             'audio_channels': audio_channels,
-            
             # General properties
             'duration': duration,
             'bitrate': bitrate,
             'container': container,
             'file_size': os.path.getsize(file_path),
-            
             # Stream counts
             'video_streams_count': len(video_streams),
             'audio_streams_count': len(audio_streams),
@@ -136,7 +132,7 @@ def videos_are_compatible_for_fast_merge(video_infos: List[Dict[str, Any]]) -> t
     # Critical parameters for fast concatenation
     critical_params = {
         'width': 'Resolution width',
-        'height': 'Resolution height', 
+        'height': 'Resolution height',
         'fps': 'Frame rate',
         'video_codec': 'Video codec',
         'audio_codec': 'Audio codec',
@@ -193,7 +189,7 @@ async def track_merge_progress(process, total_duration: float, status_message, m
             line = await asyncio.wait_for(process.stderr.readline(), timeout=1.0)
             if not line:
                 break
-                
+            
             line = line.decode().strip()
             
             # Parse FFmpeg progress information
@@ -213,17 +209,13 @@ async def track_merge_progress(process, total_duration: float, status_message, m
 🎬 **{merge_type} in Progress**
 
 📁 **Output:** `{output_filename[:40]}{'...' if len(output_filename) > 40 else ''}`
-
 ⏱️ **Duration:** `{total_duration:.0f}s`
 
 {get_progress_bar(progress, 25)} `{progress:.1%}`
 
 📊 **Processed:** `{current_time:.0f}s` / `{total_duration:.0f}s`
-
 ⚡ **Speed:** `{speed_multiplier:.2f}x`
-
 🕐 **Elapsed:** `{elapsed:.0f}s`
-
 ⏰ **ETA:** `{eta:.0f}s remaining`
 
 💡 **Status:** Processing video streams...
@@ -314,45 +306,21 @@ async def fast_merge_identical_videos(video_files: List[str], user_id: int, stat
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0 and os.path.exists(final_output):
-            file_size = get_human_readable_size(os.path.getsize(final_output))
+            # Clean up
+            try:
+                os.remove(concat_file)
+            except:
+                pass
             
-            await status_message.edit_text(
-                f"""
-✅ **Ultra-Fast Merge Complete!**
-
-🎬 **Output:** `{os.path.basename(final_output)}`
-📊 **Size:** `{file_size}`
-⏱️ **Duration:** `{total_duration:.0f}s`
-🚀 **Mode:** Lossless (No re-encoding)
-
-🎉 **Ready for upload!**
-"""
-            )
-            
-            logger.info(f"✅ Fast merge completed: {final_output}")
+            logger.info(f"✅ Fast merge successful: {final_output}")
             return final_output
-            
         else:
-            error_msg = stderr.decode() if stderr else "Unknown error"
-            logger.error(f"❌ Fast merge failed: {error_msg}")
-            
-            await status_message.edit_text(
-                f"❌ **Fast Merge Failed**\n\n"
-                f"**Error:** {error_msg[:200]}...\n\n"
-                f"🔄 **Trying compatible merge...**"
-            )
-            
-            return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
+            logger.error(f"Fast merge failed: {stderr.decode()}")
+            return None
             
     except Exception as e:
-        logger.error(f"❌ Fast merge exception: {e}")
-        await status_message.edit_text(
-            f"❌ **Fast Merge Error**\n\n"
-            f"**Error:** {str(e)}\n\n"
-            f"🔄 **Switching to compatible merge...**"
-        )
-        return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
-        
+        logger.error(f"Fast merge error: {e}")
+        return None
     finally:
         # Clean up concat file
         try:
@@ -362,48 +330,62 @@ async def fast_merge_identical_videos(video_files: List[str], user_id: int, stat
             pass
 
 async def complex_merge_videos(video_files: List[str], user_id: int, status_message, video_infos: List[Dict[str, Any]], output_filename: str = None) -> Optional[str]:
-    """Compatible merge with re-encoding for different formats."""
+    """Complex merge with re-encoding for compatibility."""
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     
     # Generate output filename
     if output_filename:
         base_name = os.path.splitext(output_filename)[0]
-        final_output = os.path.join(user_download_dir, f"{base_name}_merged.mkv")
+        final_output = os.path.join(user_download_dir, f"{base_name}_reencoded.mkv")
     else:
         timestamp = int(time.time())
-        final_output = os.path.join(user_download_dir, f"merged_compatible_{timestamp}.mkv")
+        final_output = os.path.join(user_download_dir, f"merged_reencoded_{timestamp}.mkv")
     
     try:
-        # Analyze video properties to determine best settings
-        reference = video_infos[0] if video_infos else None
-        if not reference:
-            raise Exception("No video information available")
-        
         # Get total duration
         total_duration = await get_total_duration(video_files)
         
-        # Prepare FFmpeg command for compatible merge
+        # Determine best common format from video infos
+        if video_infos:
+            # Find most common resolution
+            resolutions = [(info['width'], info['height']) for info in video_infos]
+            common_resolution = max(set(resolutions), key=resolutions.count)
+            
+            # Find best codec
+            video_codecs = [info['video_codec'] for info in video_infos]
+            common_codec = max(set(video_codecs), key=video_codecs.count)
+        else:
+            common_resolution = (1920, 1080)
+            common_codec = 'h264'
+        
+        # Build FFmpeg command for complex merge
         cmd = ['ffmpeg', '-y']
         
-        # Add all input files
+        # Add input files
         for video_file in video_files:
             cmd.extend(['-i', video_file])
         
-        # Build filter complex for concatenation with re-encoding
+        # Filter complex for concatenation with re-encoding
         filter_parts = []
         for i in range(len(video_files)):
-            filter_parts.append(f"[{i}:v][{i}:a]")
+            filter_parts.append(f"[{i}:v]scale={common_resolution[0]}:{common_resolution[1]}:force_original_aspect_ratio=decrease,pad={common_resolution[0]}:{common_resolution[1]}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}];")
+            filter_parts.append(f"[{i}:a]aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[a{i}];")
+        
+        # Concatenate all streams
+        video_concat = ''.join([f"[v{i}]" for i in range(len(video_files))]) + f"concat=n={len(video_files)}:v=1:a=0[outv];"
+        audio_concat = ''.join([f"[a{i}]" for i in range(len(video_files))]) + f"concat=n={len(video_files)}:v=0:a=1[outa]"
+        
+        filter_complex = ''.join(filter_parts) + video_concat + audio_concat
         
         cmd.extend([
-            '-filter_complex',
-            f"{''.join(filter_parts)}concat=n={len(video_files)}:v=1:a=1[outv][outa]",
+            '-filter_complex', filter_complex,
             '-map', '[outv]',
             '-map', '[outa]',
             '-c:v', 'libx264',
             '-preset', 'medium',
-            '-crf', '18',  # High quality
+            '-crf', '18',
             '-c:a', 'aac',
-            '-b:a', '192k',
+            '-b:a', '128k',
             '-movflags', '+faststart',
             final_output
         ])
@@ -417,8 +399,9 @@ async def complex_merge_videos(video_files: List[str], user_id: int, status_mess
 📁 **Files:** `{len(video_files)} videos`
 ⏱️ **Total Duration:** `{total_duration:.0f}s`
 🎯 **Output:** `{os.path.basename(final_output)}`
+📐 **Resolution:** `{common_resolution[0]}x{common_resolution[1]}`
 
-💡 **Status:** Processing and re-encoding...
+💡 **Status:** Initializing compatible merge...
 """
         )
         
@@ -436,119 +419,83 @@ async def complex_merge_videos(video_files: List[str], user_id: int, status_mess
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0 and os.path.exists(final_output):
-            file_size = get_human_readable_size(os.path.getsize(final_output))
-            
-            await status_message.edit_text(
-                f"""
-✅ **Compatible Merge Complete!**
-
-🎬 **Output:** `{os.path.basename(final_output)}`
-📊 **Size:** `{file_size}`
-⏱️ **Duration:** `{total_duration:.0f}s`
-🔄 **Mode:** Re-encoded for compatibility
-
-🎉 **Ready for upload!**
-"""
-            )
-            
-            logger.info(f"✅ Compatible merge completed: {final_output}")
+            logger.info(f"✅ Complex merge successful: {final_output}")
             return final_output
-            
         else:
-            error_msg = stderr.decode() if stderr else "Unknown error"
-            logger.error(f"❌ Compatible merge failed: {error_msg}")
-            
-            await status_message.edit_text(
-                f"""
-❌ **Compatible Merge Failed**
-
-**Error:** {error_msg[:300]}...
-
-Please check your video files and try again.
-"""
-            )
+            logger.error(f"Complex merge failed: {stderr.decode()}")
             return None
             
     except Exception as e:
-        logger.error(f"❌ Compatible merge exception: {e}")
-        await status_message.edit_text(
-            f"""
-❌ **Merge Error**
-
-**Error:** {str(e)}
-
-Please check your video files and try again.
-"""
-        )
+        logger.error(f"Complex merge error: {e}")
         return None
 
 async def merge_videos(video_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
-    """Main merge function that automatically chooses the best method."""
+    """Main video merge function with intelligent mode selection."""
     try:
-        if not video_files or len(video_files) < 2:
-            await status_message.edit_text("❌ **Error:** Need at least 2 videos to merge")
+        # Extract file paths from video_files (handle both file paths and file objects)
+        file_paths = []
+        for video_file in video_files:
+            if isinstance(video_file, dict):
+                if 'file_path' in video_file:
+                    file_paths.append(video_file['file_path'])
+                elif 'message' in video_file:
+                    # Download Telegram file first
+                    from helpers.downloader import download_telegram_file
+                    downloaded_path = await download_telegram_file(video_file['message'], user_id)
+                    if downloaded_path:
+                        file_paths.append(downloaded_path)
+            else:
+                file_paths.append(video_file)
+        
+        if len(file_paths) < 2:
+            logger.error("Need at least 2 video files to merge")
             return None
         
-        # Analyze all videos
-        await status_message.edit_text(
-            f"""
-🔍 **Analyzing Videos...**
-
-📁 **Files:** `{len(video_files)} videos`
-⚡ **Status:** Getting video properties...
-"""
-        )
-        
+        # Get video information for all files
         video_infos = []
-        for i, video_file in enumerate(video_files):
-            info = await get_detailed_video_info(video_file)
+        for file_path in file_paths:
+            info = await get_detailed_video_info(file_path)
             if info:
                 video_infos.append(info)
-            
-            # Update progress
-            progress = (i + 1) / len(video_files)
-            await status_message.edit_text(
-                f"""
-🔍 **Analyzing Videos...**
-
-📁 **Files:** `{len(video_files)} videos`
-{get_progress_bar(progress, 20)} `{progress:.1%}`
-⚡ **Status:** Analyzing video {i+1}/{len(video_files)}
-"""
-            )
+            else:
+                logger.error(f"Could not get video info for {file_path}")
+                return None
         
-        if len(video_infos) != len(video_files):
-            await status_message.edit_text(
-                "❌ **Error:** Some video files could not be analyzed"
-            )
-            return None
-        
-        # Choose merge method based on compatibility
+        # Check compatibility and choose merge method
         is_compatible, reason = videos_are_compatible_for_fast_merge(video_infos)
         
         if is_compatible:
-            await status_message.edit_text(
-                f"""
-🚀 **Fast Merge Available!**
-
-✅ **Compatibility:** All videos are compatible
-🎯 **Method:** Ultra-fast lossless merge
-⏱️ **Speed:** ~10x faster than re-encoding
-
-🚀 **Starting fast merge...**
-"""
-            )
-            return await fast_merge_identical_videos(video_files, user_id, status_message, video_infos, output_filename)
+            logger.info("Using fast merge (lossless concatenation)")
+            return await fast_merge_identical_videos(file_paths, user_id, status_message, video_infos, output_filename)
         else:
-            await status_message.edit_text(
-                f"""
-🔄 **Compatible Merge Required**
+            logger.info(f"Using complex merge (re-encoding): {reason}")
+            return await complex_merge_videos(file_paths, user_id, status_message, video_infos, output_filename)
+            
+    except Exception as e:
+        logger.error(f"Merge videos error: {e}")
+        return None
 
-⚠️ **Issue:** {reason}
-🎯 **Method:** Re-encoding for compatibility
-⏱️ **Note:** This will take longer but ensure quality
-
-🔄 **Starting compatible merge...**
-"""
-            )
-            return await complex_merge_vide
+async def merge_video_with_audio(video_file, audio_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
+    """Merge video with additional audio tracks."""
+    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+    
+    try:
+        # Handle video file (could be dict or path)
+        if isinstance(video_file, dict):
+            if 'file_path' in video_file:
+                video_path = video_file['file_path']
+            elif 'message' in video_file:
+                from helpers.downloader import download_telegram_file
+                video_path = await download_telegram_file(video_file['message'], user_id)
+            else:
+                logger.error("Invalid video file format")
+                return None
+        else:
+            video_path = video_file
+        
+        # Handle audio files
+        audio_paths = []
+        for audio_file in audio_files:
+            if isinstance(audio_file, dict):
+                if 'file_path' in audio_file:
+                    audio_paths.append(audio_file['file_pa
