@@ -542,4 +542,163 @@ async def handle_back_main(client: Client, query: CallbackQuery):
         user_id = int(query.data.split('_')[-1])
         
         if query.from_user.id != user_id:
+            await query.answer("❌ This button is not for you!", show_alert=True)
+            return
         
+        from bot import create_main_keyboard
+        
+        files = user_files.get(user_id, {'videos': [], 'audios': [], 'subtitles': []})
+        keyboard = create_main_keyboard(user_id)
+        
+        await query.message.edit_text(
+            f"""
+🎬 **AdvancedMergeBot Menu**
+
+📁 **Current Files:**
+🎞️ Videos: `{len(files['videos'])}`
+🎵 Audios: `{len(files['audios'])}`
+📝 Subtitles: `{len(files['subtitles'])}`
+
+💡 **Quick Actions:**
+• Send files/URLs to add to collection
+• Use buttons below for merge operations
+• Check settings for customization
+""",
+            reply_markup=keyboard
+        )
+        
+        await query.answer()
+    
+    except Exception as e:
+        logger.error(f"Back to main error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
+
+@app.on_callback_query(filters.regex(r"^cancel_(\d+)$"))
+async def handle_cancel(client: Client, query: CallbackQuery):
+    """Handle cancel callback."""
+    try:
+        user_id = int(query.data.split('_')[-1])
+        
+        if query.from_user.id != user_id:
+            await query.answer("❌ This button is not for you!", show_alert=True)
+            return
+        
+        # Clear user state
+        if user_id in user_states:
+            del user_states[user_id]
+        
+        await query.answer("❌ Operation cancelled!")
+        
+        # Go back to main menu
+        from bot import create_main_keyboard
+        
+        files = user_files.get(user_id, {'videos': [], 'audios': [], 'subtitles': []})
+        keyboard = create_main_keyboard(user_id)
+        
+        await query.message.edit_text(
+            f"""
+🎬 **AdvancedMergeBot Menu**
+
+📁 **Current Files:**
+🎞️ Videos: `{len(files['videos'])}`
+🎵 Audios: `{len(files['audios'])}`
+📝 Subtitles: `{len(files['subtitles'])}`
+
+💡 **Quick Actions:**
+• Send files/URLs to add to collection
+• Use buttons below for merge operations
+• Check settings for customization
+""",
+            reply_markup=keyboard
+        )
+    
+    except Exception as e:
+        logger.error(f"Cancel error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
+
+@app.on_callback_query(filters.regex(r"^close_(\d+)$"))
+async def handle_close(client: Client, query: CallbackQuery):
+    """Handle close menu callback."""
+    try:
+        user_id = int(query.data.split('_')[-1])
+        
+        if query.from_user.id != user_id:
+            await query.answer("❌ This button is not for you!", show_alert=True)
+            return
+        
+        await query.message.delete()
+        await query.answer("✅ Menu closed!")
+    
+    except Exception as e:
+        logger.error(f"Close error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
+
+# Settings callbacks (basic implementation)
+@app.on_callback_query(filters.regex(r"^settings_(\d+)$"))
+async def handle_settings(client: Client, query: CallbackQuery):
+    """Handle settings callback."""
+    try:
+        user_id = int(query.data.split('_')[-1])
+        
+        if query.from_user.id != user_id:
+            await query.answer("❌ This button is not for you!", show_alert=True)
+            return
+        
+        settings_text = """
+⚙️ **Bot Settings**
+
+🎬 **Merge Mode:** Auto-detect
+📄 **Upload as Doc:** Disabled
+🖼️ **Auto Thumbnail:** Enabled
+🔔 **Notifications:** Enabled
+
+💡 **Configure your bot preferences below:**
+"""
+        
+        keyboard = create_settings_keyboard(user_id)
+        
+        await query.message.edit_text(settings_text, reply_markup=keyboard)
+        await query.answer()
+    
+    except Exception as e:
+        logger.error(f"Settings error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
+
+@app.on_callback_query(filters.regex(r"^stats_(\d+)$"))
+async def handle_stats(client: Client, query: CallbackQuery):
+    """Handle stats callback."""
+    try:
+        user_id = int(query.data.split('_')[-1])
+        
+        if query.from_user.id != user_id:
+            await query.answer("❌ This button is not for you!", show_alert=True)
+            return
+        
+        # Get stats from database
+        user_data = await database.get_user(user_id)
+        bot_stats = await database.get_bot_stats()
+        
+        stats_text = f"""
+📊 **Your Statistics**
+
+🔢 **Merges:** `{user_data.get('total_merges', 0) if user_data else 0}`
+💾 **Processed:** `{get_human_readable_size(user_data.get('total_size_processed', 0) if user_data else 0)}`
+📅 **Member since:** `{time.strftime('%Y-%m-%d', time.localtime(user_data.get('join_date', 0))) if user_data else 'Unknown'}`
+
+🤖 **Bot Statistics**
+
+👥 **Total Users:** `{bot_stats.get('total_users', 0)}`
+🎬 **Total Merges:** `{bot_stats.get('total_merges', 0)}`
+💿 **Total Processed:** `{get_human_readable_size(bot_stats.get('total_size', 0))}`
+"""
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Back to Menu", callback_data=f"back_main_{user_id}")]
+        ])
+        
+        await query.message.edit_text(stats_text, reply_markup=keyboard)
+        await query.answer()
+    
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
