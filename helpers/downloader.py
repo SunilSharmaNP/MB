@@ -376,4 +376,4 @@ def get_download_stats(user_id: int) -> Dict[str, Any]:
         'total_files': len(files),
         'total_size': total_size,
         'files': files
-}
+    }
