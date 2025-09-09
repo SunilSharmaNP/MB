@@ -1,519 +1,384 @@
-# Enhanced uploader with beautiful progress and dual upload support
+# helpers/uploader.py - Complete upload functionality
+import asyncio
 import os
 import time
-import asyncio
-from aiohttp import ClientSession, FormData, ClientTimeout
-from random import choice
-from config import config
-from utils import get_human_readable_size, get_progress_bar, get_video_properties, create_progress_text
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, RetryError
+import json
 import logging
+import aiohttp
+import requests
+from typing import Optional, Callable, Dict, Any
+from pyrogram import Client
+from pyrogram.types import Message
+from config import config
+from utils import get_human_readable_size, create_progress_text, smart_progress_editor
 
 logger = logging.getLogger(__name__)
 
-# Global variables for progress throttling
-last_edit_time = {}
-EDIT_THROTTLE_SECONDS = config.EDIT_THROTTLE_SECONDS
+class UploadError(Exception):
+    """Custom exception for upload errors."""
+    pass
 
-# Configuration
-GOFILE_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB chunks
-GOFILE_UPLOAD_TIMEOUT = 3600  # 1 hour timeout
-GOFILE_RETRY_ATTEMPTS = 5
-GOFILE_RETRY_WAIT_MIN = 1
-GOFILE_RETRY_WAIT_MAX = 60
-
-async def smart_progress_editor(status_message, text: str):
-    """Smart progress editor with throttling."""
-    if not status_message or not hasattr(status_message, 'chat'):
-        return
-    
-    message_key = f"{status_message.chat.id}_{status_message.id}"
-    now = time.time()
-    last_time = last_edit_time.get(message_key, 0)
-    
-    if (now - last_time) > EDIT_THROTTLE_SECONDS:
-        try:
-            await status_message.edit_text(text, parse_mode="markdown")
-            last_edit_time[message_key] = now
-        except Exception as e:
-            logger.debug(f"Progress update failed: {e}")
-
-async def create_auto_thumbnail(video_path: str, user_id: int) -> str:
-    """Create beautiful auto-thumbnail from video middle frame."""
+async def upload_to_telegram(client: Client, file_path: str, chat_id: int, progress_callback: Optional[Callable] = None, caption: str = "", as_document: bool = False, thumbnail: str = None) -> Optional[Message]:
+    """Upload file to Telegram with progress tracking."""
     try:
-        user_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-        thumbnail_path = os.path.join(user_dir, f"thumb_{int(time.time())}.jpg")
+        if not os.path.exists(file_path):
+            raise UploadError(f"File not found: {file_path}")
         
-        # Get video properties
-        video_info = await get_video_properties(video_path)
-        if not video_info or not video_info.get("duration"):
-            return None
+        file_size = os.path.getsize(file_path)
+        if file_size > config.MAX_FILE_SIZE:
+            raise UploadError(f"File too large: {get_human_readable_size(file_size)}")
         
-        # Generate thumbnail from middle of video with enhanced settings
-        thumbnail_time = video_info["duration"] / 2
-        cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-ss', str(thumbnail_time),
-            '-i', video_path,
-            '-vframes', '1',
-            '-vf', 'scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2',
-            '-c:v', 'mjpeg',
-            '-q:v', '2',  # High quality JPEG
-            '-y', thumbnail_path
-        ]
+        filename = os.path.basename(file_path)
+        start_time = time.time()
         
-        process = await asyncio.create_subprocess_exec(
-            *cmd, 
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        async def progress_handler(current: int, total: int):
+            if progress_callback:
+                progress = current / total if total > 0 else 0
+                elapsed = time.time() - start_time
+                speed = get_human_readable_size(current / (elapsed + 0.1)) + "/s"
+                eta = get_time_left(start_time, current, total)
+                
+                progress_text = create_progress_text(
+                    "📤 Uploading to Telegram",
+                    filename,
+                    progress,
+                    speed,
+                    eta
+                )
+                
+                await progress_callback(progress_text)
         
-        await process.communicate()
-        
-        if process.returncode == 0 and os.path.exists(thumbnail_path):
-            logger.info(f"✅ Auto-thumbnail created: {thumbnail_path}")
-            return thumbnail_path
-        else:
-            logger.warning(f"⚠️ Failed to create thumbnail for {video_path}")
-            return None
-            
-    except Exception as e:
-        logger.error(f"❌ Thumbnail creation error: {e}")
-        return None
-
-async def upload_to_telegram(client, file_path: str, chat_id: int, status_message=None, as_document: bool = False, thumbnail_path: str = None, caption: str = None, user_id: int = None):
-    """Enhanced Telegram upload with beautiful progress and auto-features."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-    
-    file_size = os.path.getsize(file_path)
-    filename = os.path.basename(file_path)
-    
-    # Check file size limit
-    if file_size > config.MAX_FILE_SIZE:
-        raise ValueError(f"File size {get_human_readable_size(file_size)} exceeds Telegram limit (2GB)")
-    
-    # Auto-create thumbnail for videos if not provided
-    if not as_document and not thumbnail_path and user_id:
+        # Determine file type and upload accordingly
         from utils import get_file_type
-        if get_file_type(filename) == 'video':
-            thumbnail_path = await create_auto_thumbnail(file_path, user_id)
-    
-    start_time = time.time()
-    
-    async def progress_callback(current, total):
-        if status_message:
-            progress = current / total if total > 0 else 0
-            
-            progress_text = create_progress_text(
-                title="📤 Uploading to Telegram",
-                filename=filename,
-                progress=progress,
-                current_size=current,
-                total_size=total,
-                start_time=start_time,
-                extra_info=f"Mode: {'Document' if as_document else 'Video'}"
-            )
-            
-            await smart_progress_editor(status_message, progress_text)
-    
-    try:
-        # Enhanced caption with metadata
-        if not caption:
-            file_info = await get_video_properties(file_path) if get_file_type(filename) == 'video' else None
-            
-            caption = f"""
-✨ **Merged by AdvancedMergeBot**
-
-📁 **File:** `{filename}`
-💾 **Size:** {get_human_readable_size(file_size)}
-"""
-            
-            if file_info:
-                caption += f"""
-📐 **Resolution:** {file_info.get('width', 0)}x{file_info.get('height', 0)}
-⏱️ **Duration:** {file_info.get('duration_formatted', 'Unknown')}
-🎞️ **Codec:** {file_info.get('codec', 'Unknown').upper()}
-"""
-            
-            caption += f"\n🤖 **Powered by AdvancedMergeBot**"
+        file_type = get_file_type(filename)
         
-        # Upload with enhanced settings
-        if as_document:
+        if as_document or file_type == 'unknown':
+            # Upload as document
             message = await client.send_document(
                 chat_id=chat_id,
                 document=file_path,
                 caption=caption,
-                progress=progress_callback,
-                thumb=thumbnail_path,
-                file_name=filename
+                progress=progress_handler,
+                thumb=thumbnail
             )
-        else:
+        elif file_type == 'video':
+            # Upload as video
             message = await client.send_video(
                 chat_id=chat_id,
                 video=file_path,
                 caption=caption,
-                progress=progress_callback,
-                thumb=thumbnail_path,
-                duration=int(file_info.get('duration', 0)) if file_info else None,
-                width=file_info.get('width') if file_info else None,
-                height=file_info.get('height') if file_info else None,
+                progress=progress_handler,
+                thumb=thumbnail,
                 supports_streaming=True
             )
+        elif file_type == 'audio':
+            # Upload as audio
+            message = await client.send_audio(
+                chat_id=chat_id,
+                audio=file_path,
+                caption=caption,
+                progress=progress_handler,
+                thumb=thumbnail
+            )
+        else:
+            # Fallback to document
+            message = await client.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption=caption,
+                progress=progress_handler,
+                thumb=thumbnail
+            )
         
-        # Final success message
-        upload_time = time.time() - start_time
-        if status_message:
-            await smart_progress_editor(status_message, f"""
-✅ **Telegram Upload Complete!**
-
-📁 **File:** `{filename}`
-💾 **Size:** {get_human_readable_size(file_size)}
-⏱️ **Upload Time:** `{upload_time:.1f}s`
-🚀 **Speed:** {get_human_readable_size(file_size/upload_time)}/s
-
-🎉 **Successfully uploaded to Telegram!**
-""")
-        
-        logger.info(f"✅ Telegram upload successful: {filename}")
+        logger.info(f"✅ Successfully uploaded to Telegram: {filename}")
         return message
         
     except Exception as e:
-        error_msg = f"❌ **Telegram Upload Failed**\n\n`{str(e)}`"
-        if status_message:
-            await status_message.edit_text(error_msg)
-        logger.error(f"❌ Telegram upload failed: {e}")
-        raise e
+        logger.error(f"❌ Failed to upload to Telegram: {e}")
+        raise UploadError(f"Telegram upload failed: {str(e)}")
+
+def get_time_left(start_time: float, current: int, total: int) -> str:
+    """Calculate ETA for uploads."""
+    if current <= 0 or total <= 0:
+        return "⏳ Calculating..."
     
-    finally:
-        # Clean up auto-generated thumbnail
-        if thumbnail_path and os.path.exists(thumbnail_path):
-            try:
-                os.remove(thumbnail_path)
-            except:
-                pass
+    elapsed = time.time() - start_time
+    if elapsed <= 0.1:
+        return "⏳ Starting..."
+    
+    rate = current / elapsed
+    if rate == 0:
+        return "⏳ Calculating..."
+    
+    remaining = (total - current) / rate
+    
+    if remaining < 60:
+        return f"⏱️ {int(remaining)}s"
+    elif remaining < 3600:
+        return f"⏱️ {int(remaining//60)}m {int(remaining%60)}s"
+    else:
+        return f"⏱️ {int(remaining//3600)}h {int((remaining%3600)//60)}m"
 
 class GofileUploader:
-    """Enhanced GoFile uploader with beautiful progress and advanced features."""
+    """GoFile upload handler with enhanced features."""
     
-    def __init__(self, token=None):
-        self.api_url = "https://api.gofile.io/"
+    def __init__(self, token: str = None):
         self.token = token or config.GOFILE_TOKEN
-        if not self.token:
-            logger.warning("⚠️ GOFILE_TOKEN not found. Using anonymous upload.")
-        self.chunk_size = GOFILE_CHUNK_SIZE
+        self.base_url = "https://api.gofile.io"
         self.session = None
     
-    async def _get_session(self):
-        """Get or create aiohttp session with enhanced settings."""
-        if self.session is None or self.session.closed:
-            timeout = ClientTimeout(
-                total=GOFILE_UPLOAD_TIMEOUT,
-                connect=30,
-                sock_read=300
-            )
-            self.session = ClientSession(timeout=timeout)
-        return self.session
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=3600),
+            connector=aiohttp.TCPConnector(limit=100)
+        )
+        return self
     
-    async def close(self):
-        """Close session gracefully."""
-        if self.session and not self.session.closed:
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
             await self.session.close()
-            self.session = None
     
-    @retry(
-        stop=stop_after_attempt(GOFILE_RETRY_ATTEMPTS),
-        wait=wait_exponential(multiplier=1, min=GOFILE_RETRY_WAIT_MIN, max=GOFILE_RETRY_WAIT_MAX),
-        retry=retry_if_exception_type(Exception),
-        reraise=True
-    )
-    async def _get_server(self):
-        """Get optimal GoFile server with retry logic."""
-        logger.info("🔍 Finding best GoFile server...")
-        session = await self._get_session()
-        
-        async with session.get(f"{self.api_url}servers") as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            
-            if result.get("status") == "ok":
-                servers = result["data"]["servers"]
-                # Select server based on location preference or random
-                selected_server = choice(servers)["name"]
-                logger.info(f"✅ Selected GoFile server: {selected_server}")
-                return selected_server
-            else:
-                raise Exception(f"GoFile API error: {result.get('message', 'Unknown error')}")
-    
-    async def upload_file(self, file_path: str, status_message=None):
-        """Enhanced GoFile upload with real-time progress and beautiful UI."""
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        file_size = os.path.getsize(file_path)
-        filename = os.path.basename(file_path)
-        
-        # Check file size limits
-        if file_size > (10 * 1024 * 1024 * 1024):  # 10GB GoFile limit
-            raise ValueError(f"File size {get_human_readable_size(file_size)} exceeds GoFile limit (10GB)")
-        
-        # Get upload server
+    async def get_server(self) -> str:
+        """Get the best server for upload."""
         try:
-            if status_message:
-                await smart_progress_editor(status_message, """
-🔗 **Connecting to GoFile**
-
-🌐 **Status:** Finding optimal server...
-📡 **Network:** Establishing connection...
-""")
+            async with self.session.get(f"{self.base_url}/getServer") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == 'ok':
+                        return data['data']['server']
+        except Exception as e:
+            logger.warning(f"Failed to get GoFile server: {e}")
+        
+        return "store1"  # Fallback server
+    
+    async def upload_file(self, file_path: str, progress_callback: Optional[Callable] = None, folder_id: str = None) -> Optional[Dict[str, Any]]:
+        """Upload file to GoFile with progress tracking."""
+        try:
+            if not os.path.exists(file_path):
+                raise UploadError(f"File not found: {file_path}")
             
-            server = await self._get_server()
+            filename = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            
+            if file_size == 0:
+                raise UploadError("File is empty")
+            
+            # Get upload server
+            server = await self.get_server()
             upload_url = f"https://{server}.gofile.io/uploadFile"
             
-        except Exception as e:
-            error_msg = f"""
-❌ **GoFile Connection Failed**
-
-🚨 **Error:** `{str(e)}`
-💡 **Tip:** Check internet connection or try again later
-"""
-            if status_message:
-                await status_message.edit_text(error_msg)
-            raise e
-        
-        # Initialize upload with beautiful progress
-        if status_message:
-            await smart_progress_editor(status_message, f"""
-🚀 **Starting GoFile Upload**
-
-📁 **File:** `{filename[:40]}{'...' if len(filename) > 40 else ''}`
-💾 **Size:** {get_human_readable_size(file_size)}
-🌐 **Server:** `{server}.gofile.io`
-🔑 **Auth:** {'Premium' if self.token else 'Anonymous'}
-
-⚡ **Preparing upload stream...**
-""")
-        
-        start_time = time.time()
-        uploaded_bytes = 0
-        
-        try:
-            session = await self._get_session()
-            
-            # Custom file reader for progress tracking
-            class ProgressFileReader:
-                def __init__(self, file_path, chunk_size, progress_callback):
-                    self.file_path = file_path
-                    self.chunk_size = chunk_size
-                    self.progress_callback = progress_callback
-                    self.uploaded = 0
-                    self.total_size = os.path.getsize(file_path)
-                
-                async def __aiter__(self):
-                    with open(self.file_path, 'rb') as f:
-                        while True:
-                            chunk = f.read(self.chunk_size)
-                            if not chunk:
-                                break
-                            
-                            self.uploaded += len(chunk)
-                            if self.progress_callback:
-                                await self.progress_callback(self.uploaded, self.total_size)
-                            
-                            yield chunk
-                            await asyncio.sleep(0.001)  # Prevent blocking
-            
-            async def progress_callback(current, total):
-                nonlocal uploaded_bytes
-                uploaded_bytes = current
-                
-                if status_message:
-                    progress = current / total if total > 0 else 0
-                    
-                    progress_text = create_progress_text(
-                        title="🌐 Uploading to GoFile",
-                        filename=filename,
-                        progress=progress,
-                        current_size=current,
-                        total_size=total,
-                        start_time=start_time,
-                        extra_info=f"Server: {server}.gofile.io"
-                    )
-                    
-                    await smart_progress_editor(status_message, progress_text)
+            start_time = time.time()
+            uploaded = 0
             
             # Prepare form data
-            form = FormData()
+            data = aiohttp.FormData()
+            if folder_id:
+                data.add_field('folderId', folder_id)
             if self.token:
-                form.add_field("token", self.token)
+                data.add_field('token', self.token)
             
             # Add file with progress tracking
-            file_reader = ProgressFileReader(file_path, self.chunk_size, progress_callback)
-            form.add_field(
-                "file",
-                file_reader,
-                filename=filename,
-                content_type="application/octet-stream"
-            )
+            async def file_sender():
+                nonlocal uploaded
+                with open(file_path, 'rb') as f:
+                    chunk_size = config.CHUNK_SIZE
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        uploaded += len(chunk)
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress = uploaded / file_size
+                            elapsed = time.time() - start_time
+                            speed = get_human_readable_size(uploaded / (elapsed + 0.1)) + "/s"
+                            eta = get_time_left(start_time, uploaded, file_size)
+                            
+                            progress_text = create_progress_text(
+                                "☁️ Uploading to GoFile",
+                                filename,
+                                progress,
+                                speed,
+                                eta
+                            )
+                            
+                            await progress_callback(progress_text)
+                        
+                        yield chunk
             
-            # Execute upload with retry logic
-            @retry(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=1, min=2, max=30),
-                retry=retry_if_exception_type(Exception),
-                reraise=True
-            )
-            async def _perform_upload():
-                async with session.post(upload_url, data=form) as resp:
-                    resp.raise_for_status()
-                    return await resp.json()
+            data.add_field('file', file_sender(), filename=filename, content_type='application/octet-stream')
             
-            response_data = await _perform_upload()
-            
-            # Process response
-            if response_data.get("status") == "ok":
-                download_page = response_data["data"]["downloadPage"]
-                file_id = response_data["data"].get("fileId", "unknown")
-                upload_time = time.time() - start_time
-                
-                success_message = f"""
-✅ **GoFile Upload Complete!**
-
-📁 **File:** `{filename}`
-💾 **Size:** {get_human_readable_size(file_size)}
-⏱️ **Upload Time:** `{upload_time:.1f}s`
-🚀 **Average Speed:** {get_human_readable_size(file_size/upload_time) if upload_time > 0 else '0 B'}/s
-
-🔗 **Download Link:**
-`{download_page}`
-
-📋 **File ID:** `{file_id}`
-🌐 **Server:** `{server}.gofile.io`
-
-🎉 **Successfully uploaded to GoFile!**
-"""
-                
-                if status_message:
-                    await smart_progress_editor(status_message, success_message)
-                
-                logger.info(f"✅ GoFile upload successful: {filename}")
-                
-                return {
-                    "status": "success",
-                    "download_url": download_page,
-                    "file_id": file_id,
-                    "server": server,
-                    "upload_time": upload_time,
-                    "file_size": file_size
-                }
-            
-            else:
-                error_msg = response_data.get("message", "Unknown upload error")
-                raise Exception(f"GoFile upload failed: {error_msg}")
-                
+            # Upload file
+            async with self.session.post(upload_url, data=data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    
+                    if result.get('status') == 'ok':
+                        file_info = result['data']
+                        
+                        logger.info(f"✅ Successfully uploaded to GoFile: {filename}")
+                        
+                        return {
+                            'success': True,
+                            'file_id': file_info.get('fileId'),
+                            'filename': filename,
+                            'size': file_size,
+                            'download_url': file_info.get('downloadPage'),
+                            'direct_url': file_info.get('directLink'),
+                            'server': server
+                        }
+                    else:
+                        raise UploadError(f"GoFile API error: {result.get('message', 'Unknown error')}")
+                else:
+                    raise UploadError(f"HTTP {response.status}: {response.reason}")
+                    
         except Exception as e:
-            error_message = f"""
-❌ **GoFile Upload Failed**
-
-📁 **File:** `{filename}`
-🚨 **Error:** `{str(e)}`
-
-💡 **Suggestions:**
-• Check internet connection
-• Try again in a few minutes  
-• File might be too large
-• Server may be busy
-"""
-            if status_message:
-                await status_message.edit_text(error_message)
-            
             logger.error(f"❌ GoFile upload failed: {e}")
-            raise e
-        
-        finally:
-            # Clean up
-            await self.close()
-
-# Utility functions for dual upload
-async def dual_upload(client, file_path: str, chat_id: int, user_id: int, status_message=None, upload_settings: dict = None):
-    """Upload file to both Telegram and GoFile with beautiful progress management."""
-    upload_settings = upload_settings or {}
+            raise UploadError(f"GoFile upload failed: {str(e)}")
     
-    filename = os.path.basename(file_path)
-    file_size = os.path.getsize(file_path)
+    async def create_folder(self, name: str, parent_folder: str = None) -> Optional[str]:
+        """Create a new folder in GoFile."""
+        try:
+            if not self.token:
+                logger.warning("No GoFile token provided, cannot create folders")
+                return None
+            
+            data = {
+                'createFolder': name,
+                'token': self.token
+            }
+            
+            if parent_folder:
+                data['parentFolderId'] = parent_folder
+            
+            async with self.session.post(f"{self.base_url}/createFolder", data=data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if result.get('status') == 'ok':
+                        return result['data']['folderId']
+                        
+        except Exception as e:
+            logger.error(f"Failed to create GoFile folder: {e}")
+        
+        return None
+
+async def dual_upload(client: Client, file_path: str, chat_id: int, progress_callback: Optional[Callable] = None, caption: str = "", as_document: bool = False, thumbnail: str = None, gofile_folder: str = None) -> Dict[str, Any]:
+    """Upload to both Telegram and GoFile simultaneously."""
     
     results = {
-        "telegram": None,
-        "gofile": None,
-        "errors": []
+        'telegram': {'success': False, 'message': None, 'error': None},
+        'gofile': {'success': False, 'data': None, 'error': None}
     }
     
-    try:
-        if status_message:
-            await smart_progress_editor(status_message, f"""
-🚀 **Starting Dual Upload**
-
-📁 **File:** `{filename}`
-💾 **Size:** {get_human_readable_size(file_size)}
-
-📤 **Destinations:** Telegram + GoFile
-⚡ **Mode:** Parallel upload
-""")
-        
-        # Upload to Telegram
+    filename = os.path.basename(file_path)
+    
+    async def telegram_upload():
         try:
-            telegram_msg = await upload_to_telegram(
-                client=client,
-                file_path=file_path,
-                chat_id=chat_id,
-                status_message=status_message,
-                as_document=upload_settings.get('as_document', False),
-                user_id=user_id
+            if progress_callback:
+                await progress_callback("📤 **Starting Telegram upload...**")
+            
+            message = await upload_to_telegram(
+                client, file_path, chat_id, 
+                progress_callback, caption, as_document, thumbnail
             )
-            results["telegram"] = telegram_msg
+            
+            results['telegram']['success'] = True
+            results['telegram']['message'] = message
             
         except Exception as e:
-            results["errors"].append(f"Telegram upload failed: {str(e)}")
-            logger.error(f"❌ Telegram upload error: {e}")
-        
-        # Upload to GoFile
+            results['telegram']['error'] = str(e)
+            logger.error(f"Telegram upload failed: {e}")
+    
+    async def gofile_upload():
         try:
-            gofile_uploader = GofileUploader()
-            gofile_result = await gofile_uploader.upload_file(file_path, status_message)
-            results["gofile"] = gofile_result
+            if progress_callback:
+                await progress_callback("☁️ **Starting GoFile upload...**")
             
+            async with GofileUploader() as uploader:
+                data = await uploader.upload_file(
+                    file_path, progress_callback, gofile_folder
+                )
+                
+                results['gofile']['success'] = True
+                results['gofile']['data'] = data
+                
         except Exception as e:
-            results["errors"].append(f"GoFile upload failed: {str(e)}")
-            logger.error(f"❌ GoFile upload error: {e}")
-        
-        # Final results summary
-        success_count = sum(1 for result in [results["telegram"], results["gofile"]] if result is not None)
-        
-        if success_count > 0:
-            summary = f"""
-🎉 **Upload Summary**
+            results['gofile']['error'] = str(e)
+            logger.error(f"GoFile upload failed: {e}")
+    
+    # Run both uploads simultaneously
+    if progress_callback:
+        await progress_callback(
+            f"""
+📤 **Dual Upload Started!**
 
 📁 **File:** `{filename}`
-✅ **Successful:** `{success_count}/2 platforms`
+📊 **Size:** `{get_human_readable_size(os.path.getsize(file_path))}`
 
+🚀 **Uploading to both platforms...**
 """
-            
-            if results["telegram"]:
-                summary += "📱 **Telegram:** ✅ Uploaded successfully\n"
-            
-            if results["gofile"]:
-                summary += f"🌐 **GoFile:** ✅ {results['gofile']['download_url']}\n"
-            
-            if results["errors"]:
-                summary += f"\n⚠️ **Errors:** `{len(results['errors'])} issues`"
-            
-            if status_message:
-                await smart_progress_editor(status_message, summary)
+        )
+    
+    await asyncio.gather(
+        telegram_upload(),
+        gofile_upload(),
+        return_exceptions=True
+    )
+    
+    # Generate results summary
+    summary = f"📤 **Dual Upload Complete!**\n\n"
+    summary += f"📁 **File:** `{filename}`\n\n"
+    
+    if results['telegram']['success']:
+        summary += "✅ **Telegram:** Success\n"
+    else:
+        summary += f"❌ **Telegram:** {results['telegram']['error']}\n"
+    
+    if results['gofile']['success']:
+        summary += "✅ **GoFile:** Success\n"
+        if results['gofile']['data']:
+            summary += f"🔗 **Link:** {results['gofile']['data']['download_url']}\n"
+    else:
+        summary += f"❌ **GoFile:** {results['gofile']['error']}\n"
+    
+    if progress_callback:
+        await progress_callback(summary)
+    
+    return results
+
+async def generate_thumbnail(video_path: str, output_path: str = None, timestamp: str = "00:00:05") -> Optional[str]:
+    """Generate thumbnail from video file."""
+    try:
+        if not output_path:
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            output_path = os.path.join(os.path.dirname(video_path), f"{base_name}_thumb.jpg")
         
-        return results
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-ss', timestamp,
+            '-vframes', '1',
+            '-vf', 'scale=320:240',
+            '-q:v', '2',
+            output_path
+        ]
         
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0 and os.path.exists(output_path):
+            logger.info(f"✅ Thumbnail generated: {output_path}")
+            return output_path
+        else:
+            logger.error(f"Thumbnail generation failed: {stderr.decode()}")
+            return None
+            
     except Exception as e:
-        logger.error(f"❌ Dual upload error: {e}")
-        if status_message:
-            await status_message.edit_text(f"❌ **Dual Upload Failed**\n\n`{str(e)}`")
-        raise e
+        logger.error(f"Thumbnail generation error: {e}")
+        return None
