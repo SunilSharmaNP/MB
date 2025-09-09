@@ -498,4 +498,210 @@ async def merge_video_with_audio(video_file, audio_files: List[str], user_id: in
         for audio_file in audio_files:
             if isinstance(audio_file, dict):
                 if 'file_path' in audio_file:
-                    audio_paths.append(audio_file['file_pa
+                    audio_paths.append(audio_file['file_path'])
+                elif 'message' in audio_file:
+                    from helpers.downloader import download_telegram_file
+                    downloaded_path = await download_telegram_file(audio_file['message'], user_id)
+                    if downloaded_path:
+                        audio_paths.append(downloaded_path)
+            else:
+                audio_paths.append(audio_file)
+        
+        if not video_path or not audio_paths:
+            logger.error("Invalid video or audio files")
+            return None
+        
+        # Generate output filename
+        if output_filename:
+            base_name = os.path.splitext(output_filename)[0]
+            final_output = os.path.join(user_download_dir, f"{base_name}_with_audio.mkv")
+        else:
+            timestamp = int(time.time())
+            final_output = os.path.join(user_download_dir, f"video_with_audio_{timestamp}.mkv")
+        
+        # Get video duration for progress tracking
+        video_info = await get_detailed_video_info(video_path)
+        duration = video_info['duration'] if video_info else 0
+        
+        # Build FFmpeg command
+        cmd = ['ffmpeg', '-y', '-i', video_path]
+        
+        # Add audio inputs
+        for audio_path in audio_paths:
+            cmd.extend(['-i', audio_path])
+        
+        # Map video stream
+        cmd.extend(['-map', '0:v'])
+        
+        # Map original audio stream if exists
+        if video_info and video_info.get('has_audio'):
+            cmd.extend(['-map', '0:a'])
+        
+        # Map additional audio streams
+        for i, _ in enumerate(audio_paths, 1):
+            cmd.extend(['-map', f'{i}:a'])
+        
+        # Output settings
+        cmd.extend([
+            '-c:v', 'copy',  # Copy video without re-encoding
+            '-c:a', 'aac',   # Re-encode audio to AAC
+            '-b:a', '128k',  # Audio bitrate
+            final_output
+        ])
+        
+        # Start progress message
+        await status_message.edit_text(
+            f"""
+🎵 **Audio Merge in Progress**
+
+🎬 **Video:** `{os.path.basename(video_path)}`
+🎵 **Audio Tracks:** `{len(audio_paths)} additional`
+🎯 **Output:** `{os.path.basename(final_output)}`
+
+💡 **Status:** Adding audio tracks...
+"""
+        )
+        
+        # Execute FFmpeg
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Track progress
+        await track_merge_progress(process, duration, status_message, "🎵 Audio Integration", os.path.basename(final_output))
+        
+        # Wait for completion
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0 and os.path.exists(final_output):
+            logger.info(f"✅ Audio merge successful: {final_output}")
+            return final_output
+        else:
+            logger.error(f"Audio merge failed: {stderr.decode()}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Audio merge error: {e}")
+        return None
+
+async def merge_video_with_subtitles(video_file, subtitle_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
+    """Merge video with subtitle tracks."""
+    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+    
+    try:
+        # Handle video file
+        if isinstance(video_file, dict):
+            if 'file_path' in video_file:
+                video_path = video_file['file_path']
+            elif 'message' in video_file:
+                from helpers.downloader import download_telegram_file
+                video_path = await download_telegram_file(video_file['message'], user_id)
+            else:
+                logger.error("Invalid video file format")
+                return None
+        else:
+            video_path = video_file
+        
+        # Handle subtitle files
+        subtitle_paths = []
+        for subtitle_file in subtitle_files:
+            if isinstance(subtitle_file, dict):
+                if 'file_path' in subtitle_file:
+                    subtitle_paths.append(subtitle_file['file_path'])
+                elif 'message' in subtitle_file:
+                    from helpers.downloader import download_telegram_file
+                    downloaded_path = await download_telegram_file(subtitle_file['message'], user_id)
+                    if downloaded_path:
+                        subtitle_paths.append(downloaded_path)
+            else:
+                subtitle_paths.append(subtitle_file)
+        
+        if not video_path or not subtitle_paths:
+            logger.error("Invalid video or subtitle files")
+            return None
+        
+        # Generate output filename
+        if output_filename:
+            base_name = os.path.splitext(output_filename)[0]
+            final_output = os.path.join(user_download_dir, f"{base_name}_with_subs.mkv")
+        else:
+            timestamp = int(time.time())
+            final_output = os.path.join(user_download_dir, f"video_with_subs_{timestamp}.mkv")
+        
+        # Get video duration for progress tracking
+        video_info = await get_detailed_video_info(video_path)
+        duration = video_info['duration'] if video_info else 0
+        
+        # Build FFmpeg command
+        cmd = ['ffmpeg', '-y', '-i', video_path]
+        
+        # Add subtitle inputs
+        for subtitle_path in subtitle_paths:
+            cmd.extend(['-i', subtitle_path])
+        
+        # Map video and audio streams
+        cmd.extend(['-map', '0:v'])
+        if video_info and video_info.get('has_audio'):
+            cmd.extend(['-map', '0:a'])
+        
+        # Map subtitle streams
+        for i, _ in enumerate(subtitle_paths, 1):
+            cmd.extend(['-map', f'{i}:s'])
+        
+        # Output settings
+        cmd.extend([
+            '-c:v', 'copy',  # Copy video without re-encoding
+            '-c:a', 'copy',  # Copy audio without re-encoding
+            '-c:s', 'srt',   # Convert subtitles to SRT
+            final_output
+        ])
+        
+        # Start progress message
+        await status_message.edit_text(
+            f"""
+📝 **Subtitle Merge in Progress**
+
+🎬 **Video:** `{os.path.basename(video_path)}`
+📝 **Subtitles:** `{len(subtitle_paths)} tracks`
+🎯 **Output:** `{os.path.basename(final_output)}`
+
+💡 **Status:** Embedding subtitle tracks...
+"""
+        )
+        
+        # Execute FFmpeg
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Track progress
+        await track_merge_progress(process, duration, status_message, "📝 Subtitle Integration", os.path.basename(final_output))
+        
+        # Wait for completion
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0 and os.path.exists(final_output):
+            logger.info(f"✅ Subtitle merge successful: {final_output}")
+            return final_output
+        else:
+            logger.error(f"Subtitle merge failed: {stderr.decode()}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Subtitle merge error: {e}")
+        return None
+
+# Utility function for cleanup
+def cleanup_temp_files(file_list: List[str]):
+    """Clean up temporary files."""
+    for file_path in file_list:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"🗑️ Cleaned up: {file_path}")
+        except Exception as e:
+            logger.warning(f"Could not clean up {file_path}: {e}")
