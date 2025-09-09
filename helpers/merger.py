@@ -1,4 +1,4 @@
-# Enhanced bulletproof merger with beautiful UI and advanced features
+# helpers/merger.py - Complete video merger with all functionality
 import asyncio
 import os
 import time
@@ -22,9 +22,11 @@ async def smart_progress_editor(status_message, text: str):
     """Smart progress editor with throttling."""
     if not status_message or not hasattr(status_message, 'chat'):
         return
+        
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
     last_time = last_edit_time.get(message_key, 0)
+    
     if (now - last_time) > EDIT_THROTTLE_SECONDS:
         try:
             await status_message.edit_text(text, parse_mode="markdown")
@@ -33,7 +35,7 @@ async def smart_progress_editor(status_message, text: str):
             logger.debug(f"Progress update failed: {e}")
 
 async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
-    """Get comprehensive video information using ffprobe with enhanced formatting."""
+    """Get comprehensive video information using ffprobe."""
     try:
         cmd = [
             'ffprobe', '-v', 'quiet', '-print_format', 'json',
@@ -43,12 +45,13 @@ async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
+        
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
             logger.error(f"ffprobe failed for {file_path}: {stderr.decode()}")
             return None
-            
+        
         data = json.loads(stdout.decode())
         
         video_streams = [s for s in data.get('streams', []) if s.get('codec_type') == 'video']
@@ -58,26 +61,25 @@ async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
         if not video_streams:
             logger.error(f"No video stream found in {file_path}")
             return None
-            
+        
         video_stream = video_streams[0]
         audio_stream = audio_streams[0] if audio_streams else None
         
-        # Parse frame rate with enhanced precision
+        # Parse frame rate
         fps_str = video_stream.get('r_frame_rate', '30/1')
         if '/' in fps_str:
             num, den = fps_str.split('/')
             fps = round(float(num) / float(den), 3) if int(den) != 0 else 30.0
         else:
             fps = round(float(fps_str), 3)
-            
-        # Get enhanced codec information
+        
+        # Get codec information
         video_codec = video_stream.get('codec_name', '').lower()
         audio_codec = audio_stream.get('codec_name', '').lower() if audio_stream else None
         
-        # Enhanced pixel format and profile detection
+        # Pixel format and profile
         pixel_format = video_stream.get('pix_fmt', 'yuv420p')
         profile = video_stream.get('profile', 'Unknown')
-        level = video_stream.get('level', 'Unknown')
         
         # Audio properties
         audio_sample_rate = int(audio_stream.get('sample_rate', 48000)) if audio_stream else 48000
@@ -102,7 +104,6 @@ async def get_detailed_video_info(file_path: str) -> Optional[Dict[str, Any]]:
             'video_codec': video_codec,
             'pixel_format': pixel_format,
             'profile': profile,
-            'level': level,
             
             # Audio properties
             'audio_codec': audio_codec,
@@ -166,7 +167,7 @@ def videos_are_compatible_for_fast_merge(video_infos: List[Dict[str, Any]]) -> t
     return True, "All videos compatible for fast merge"
 
 async def get_total_duration(video_files: List[str]) -> float:
-    """Calculate total duration with enhanced error handling."""
+    """Calculate total duration."""
     total_duration = 0.0
     successful_files = 0
     
@@ -201,7 +202,6 @@ async def track_merge_progress(process, total_duration: float, status_message, m
                 if time_match and total_duration > 0:
                     hours, minutes, seconds = time_match.groups()
                     current_time = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-                    
                     progress = min(current_time / total_duration, 1.0)
                     elapsed = time.time() - start_time
                     
@@ -213,17 +213,22 @@ async def track_merge_progress(process, total_duration: float, status_message, m
 🎬 **{merge_type} in Progress**
 
 📁 **Output:** `{output_filename[:40]}{'...' if len(output_filename) > 40 else ''}`
+
 ⏱️ **Duration:** `{total_duration:.0f}s`
 
 {get_progress_bar(progress, 25)} `{progress:.1%}`
 
 📊 **Processed:** `{current_time:.0f}s` / `{total_duration:.0f}s`
+
 ⚡ **Speed:** `{speed_multiplier:.2f}x`
+
 🕐 **Elapsed:** `{elapsed:.0f}s`
+
 ⏰ **ETA:** `{eta:.0f}s remaining`
 
 💡 **Status:** Processing video streams...
 """
+                        
                         await smart_progress_editor(status_message, progress_text.strip())
                         last_update = time.time()
                         
@@ -234,12 +239,11 @@ async def track_merge_progress(process, total_duration: float, status_message, m
             break
 
 async def fast_merge_identical_videos(video_files: List[str], user_id: int, status_message, video_infos: List[Dict[str, Any]], output_filename: str = None) -> Optional[str]:
-    """Ultra-fast merge with enhanced compatibility and beautiful progress."""
+    """Ultra-fast merge with enhanced compatibility."""
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     
     # Enhanced compatibility check
     is_compatible, reason = videos_are_compatible_for_fast_merge(video_infos)
-    
     if not is_compatible:
         await status_message.edit_text(
             f"⚠️ **Fast Merge Not Possible**\n\n"
@@ -248,204 +252,177 @@ async def fast_merge_identical_videos(video_files: List[str], user_id: int, stat
         )
         return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
     
-    # Generate enhanced output filename
+    # Generate output filename
     if output_filename:
         base_name = os.path.splitext(output_filename)[0]
         final_output = os.path.join(user_download_dir, f"{base_name}.mkv")
     else:
         timestamp = int(time.time())
-        total_files = len(video_files)
-        final_output = os.path.join(user_download_dir, f"FastMerged_{total_files}files_{timestamp}.mkv")
+        final_output = os.path.join(user_download_dir, f"merged_video_{timestamp}.mkv")
     
-    inputs_file = os.path.join(user_download_dir, f"merge_list_{int(time.time())}.txt")
+    # Create file list for FFmpeg concat
+    concat_file = os.path.join(user_download_dir, f"concat_list_{user_id}_{int(time.time())}.txt")
     
     try:
-        # Show initial merge info
-        total_size = sum(info.get('file_size', 0) for info in video_infos)
-        total_duration = sum(info.get('duration', 0) for info in video_infos)
-        
-        init_text = f"""
-🚀 **Starting Ultra-Fast Merge**
-
-📊 **Files:** `{len(video_files)} videos`
-💾 **Total Size:** {get_human_readable_size(total_size)}
-⏱️ **Total Duration:** `{total_duration:.0f}s ({total_duration/60:.1f} min)`
-📐 **Resolution:** `{video_infos[0]['width']}x{video_infos[0]['height']}`
-🎞️ **Format:** `{video_infos[0]['video_codec'].upper()}` + `{video_infos[0].get('audio_codec', 'No Audio').upper()}`
-
-🔧 **Method:** Fast concatenation (no re-encoding)
-"""
-        await smart_progress_editor(status_message, init_text.strip())
-        
-        # Create inputs file with proper path escaping
-        with open(inputs_file, 'w', encoding='utf-8') as f:
-            for file_path in video_files:
-                # Proper path escaping for FFmpeg
-                abs_path = os.path.abspath(file_path).replace('\\', '/')
-                escaped_path = abs_path.replace("'", "'\"'\"'")
+        # Write file list
+        with open(concat_file, 'w', encoding='utf-8') as f:
+            for video_file in video_files:
+                # Escape file paths for FFmpeg
+                escaped_path = video_file.replace("'", "'\"'\"'")
                 f.write(f"file '{escaped_path}'\n")
         
-        # Enhanced FFmpeg command for fast concatenation
+        # Get total duration for progress tracking
+        total_duration = await get_total_duration(video_files)
+        
+        # Prepare FFmpeg command for fast concatenation
         cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'info',
-            '-f', 'concat', '-safe', '0', '-i', inputs_file,
-            
-            # Stream copying (no re-encoding) 
-            '-c', 'copy',
-            
-            # Enhanced metadata
-            '-metadata', 'title=Merged by AdvancedMergeBot',
-            '-metadata', f'comment=Fast merged {len(video_files)} files',
-            '-metadata', 'encoder=FFmpeg via AdvancedMergeBot',
-            
-            # Output format
-            '-f', 'matroska',
-            
-            # Overwrite output
-            '-y',
-            
-            # Progress reporting
-            '-progress', 'pipe:2',
-            
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', concat_file,
+            '-c', 'copy',  # Copy streams without re-encoding
+            '-avoid_negative_ts', 'make_zero',
+            '-fflags', '+genpts',
             final_output
         ]
         
-        logger.info(f"🚀 Fast merge command: {' '.join(cmd[:10])}... (truncated)")
+        # Start progress message
+        await status_message.edit_text(
+            f"""
+🚀 **Ultra-Fast Merge Started!**
+
+🎬 **Mode:** Lossless concatenation
+📁 **Files:** `{len(video_files)} videos`
+⏱️ **Total Duration:** `{total_duration:.0f}s`
+🎯 **Output:** `{os.path.basename(final_output)}`
+
+💡 **Status:** Initializing fast merge...
+"""
+        )
         
-        # Execute merge with progress tracking
+        # Execute FFmpeg
         process = await asyncio.create_subprocess_exec(
-            *cmd, 
-            stdout=asyncio.subprocess.PIPE, 
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         
         # Track progress
-        await track_merge_progress(
-            process, 
-            total_duration, 
-            status_message, 
-            "Ultra-Fast Merge", 
-            os.path.basename(final_output)
-        )
+        await track_merge_progress(process, total_duration, status_message, "🚀 Ultra-Fast Merge", os.path.basename(final_output))
         
         # Wait for completion
         stdout, stderr = await process.communicate()
         
-        # Clean up inputs file
-        try:
-            os.remove(inputs_file)
-        except:
-            pass
-        
-        # Check result
         if process.returncode == 0 and os.path.exists(final_output):
-            output_size = os.path.getsize(final_output)
-            merge_time = time.time() - time.time()  # This should be calculated from start
+            file_size = get_human_readable_size(os.path.getsize(final_output))
             
-            success_text = f"""
-✅ **Fast Merge Completed Successfully!**
+            await status_message.edit_text(
+                f"""
+✅ **Ultra-Fast Merge Complete!**
 
-📁 **Output:** `{os.path.basename(final_output)}`
-💾 **Size:** {get_human_readable_size(output_size)}
+🎬 **Output:** `{os.path.basename(final_output)}`
+📊 **Size:** `{file_size}`
 ⏱️ **Duration:** `{total_duration:.0f}s`
-🚀 **Method:** Ultra-fast concatenation
-💡 **Quality:** Lossless (no re-encoding)
+🚀 **Mode:** Lossless (No re-encoding)
 
 🎉 **Ready for upload!**
 """
-            await smart_progress_editor(status_message, success_text.strip())
+            )
             
-            logger.info(f"✅ Fast merge successful: {final_output}")
+            logger.info(f"✅ Fast merge completed: {final_output}")
             return final_output
             
         else:
-            error_output = stderr.decode().strip()
-            logger.error(f"❌ Fast merge failed: {error_output}")
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            logger.error(f"❌ Fast merge failed: {error_msg}")
+            
             await status_message.edit_text(
                 f"❌ **Fast Merge Failed**\n\n"
-                f"**Error:** `{error_output[-200:] if len(error_output) > 200 else error_output}`\n\n"
+                f"**Error:** {error_msg[:200]}...\n\n"
                 f"🔄 **Trying compatible merge...**"
             )
+            
             return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
             
     except Exception as e:
         logger.error(f"❌ Fast merge exception: {e}")
         await status_message.edit_text(
             f"❌ **Fast Merge Error**\n\n"
-            f"**Exception:** `{str(e)}`\n\n"
+            f"**Error:** {str(e)}\n\n"
             f"🔄 **Switching to compatible merge...**"
         )
         return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
+        
+    finally:
+        # Clean up concat file
+        try:
+            if os.path.exists(concat_file):
+                os.remove(concat_file)
+        except:
+            pass
 
 async def complex_merge_videos(video_files: List[str], user_id: int, status_message, video_infos: List[Dict[str, Any]], output_filename: str = None) -> Optional[str]:
-    """Complex merge with re-encoding for incompatible videos."""
+    """Compatible merge with re-encoding for different formats."""
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     
+    # Generate output filename
     if output_filename:
         base_name = os.path.splitext(output_filename)[0]
-        final_output = os.path.join(user_download_dir, f"{base_name}.mkv")
+        final_output = os.path.join(user_download_dir, f"{base_name}_merged.mkv")
     else:
         timestamp = int(time.time())
-        final_output = os.path.join(user_download_dir, f"ComplexMerged_{len(video_files)}files_{timestamp}.mkv")
+        final_output = os.path.join(user_download_dir, f"merged_compatible_{timestamp}.mkv")
     
     try:
-        # Analyze videos for optimal settings
-        max_width = max(info['width'] for info in video_infos)
-        max_height = max(info['height'] for info in video_infos)
-        common_fps = Counter(info['fps'] for info in video_infos).most_common(1)[0][0]
+        # Analyze video properties to determine best settings
+        reference = video_infos[0] if video_infos else None
+        if not reference:
+            raise Exception("No video information available")
         
-        total_size = sum(info.get('file_size', 0) for info in video_infos)
-        total_duration = sum(info.get('duration', 0) for info in video_infos)
+        # Get total duration
+        total_duration = await get_total_duration(video_files)
         
-        await smart_progress_editor(status_message, f"""
-🔄 **Starting Compatible Merge**
-
-📊 **Analysis:**
-• Files: `{len(video_files)} videos`
-• Total Size: {get_human_readable_size(total_size)}
-• Duration: `{total_duration:.0f}s`
-• Output Resolution: `{max_width}x{max_height}`
-• Target FPS: `{common_fps:.2f}`
-
-⚙️ **Method:** Re-encoding for compatibility
-🎯 **Quality:** High quality H.264
-""")
-        
-        # Build complex FFmpeg command
-        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y']
+        # Prepare FFmpeg command for compatible merge
+        cmd = ['ffmpeg', '-y']
         
         # Add all input files
-        for file_path in video_files:
-            cmd.extend(['-i', file_path])
+        for video_file in video_files:
+            cmd.extend(['-i', video_file])
         
-        # Complex filter for scaling and concatenation
-        filter_complex = []
+        # Build filter complex for concatenation with re-encoding
+        filter_parts = []
         for i in range(len(video_files)):
-            filter_complex.append(f"[{i}:v]scale={max_width}:{max_height}:force_original_aspect_ratio=decrease,pad={max_width}:{max_height}:(ow-iw)/2:(oh-ih)/2,fps={common_fps}[v{i}]")
-            filter_complex.append(f"[{i}:a]aresample=48000,volume=1.0[a{i}]")
+            filter_parts.append(f"[{i}:v][{i}:a]")
         
-        # Concatenation
-        v_inputs = ''.join(f"[v{i}]" for i in range(len(video_files)))
-        a_inputs = ''.join(f"[a{i}]" for i in range(len(video_files)))
-        filter_complex.append(f"{v_inputs}concat=n={len(video_files)}:v=1:a=0[outv]")
-        filter_complex.append(f"{a_inputs}concat=n={len(video_files)}:v=0:a=1[outa]")
-        
-        cmd.extend(['-filter_complex', ';'.join(filter_complex)])
-        cmd.extend(['-map', '[outv]', '-map', '[outa]'])
-        
-        # High quality encoding settings
         cmd.extend([
-            '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-            '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+            '-filter_complex',
+            f"{''.join(filter_parts)}concat=n={len(video_files)}:v=1:a=1[outv][outa]",
+            '-map', '[outv]',
+            '-map', '[outa]',
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '18',  # High quality
+            '-c:a', 'aac',
+            '-b:a', '192k',
             '-movflags', '+faststart',
-            '-metadata', 'title=Advanced Merged Video',
-            '-progress', 'pipe:2',
             final_output
         ])
         
-        logger.info(f"🔄 Complex merge starting...")
+        # Start progress message
+        await status_message.edit_text(
+            f"""
+🔄 **Compatible Merge Started!**
+
+🎬 **Mode:** Re-encoding for compatibility
+📁 **Files:** `{len(video_files)} videos`
+⏱️ **Total Duration:** `{total_duration:.0f}s`
+🎯 **Output:** `{os.path.basename(final_output)}`
+
+💡 **Status:** Processing and re-encoding...
+"""
+        )
         
-        # Execute merge
+        # Execute FFmpeg
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -453,368 +430,125 @@ async def complex_merge_videos(video_files: List[str], user_id: int, status_mess
         )
         
         # Track progress
-        await track_merge_progress(
-            process,
-            total_duration,
-            status_message,
-            "Compatible Merge",
-            os.path.basename(final_output)
-        )
+        await track_merge_progress(process, total_duration, status_message, "🔄 Compatible Merge", os.path.basename(final_output))
         
+        # Wait for completion
         stdout, stderr = await process.communicate()
         
         if process.returncode == 0 and os.path.exists(final_output):
-            output_size = os.path.getsize(final_output)
+            file_size = get_human_readable_size(os.path.getsize(final_output))
             
-            await smart_progress_editor(status_message, f"""
-✅ **Compatible Merge Completed!**
+            await status_message.edit_text(
+                f"""
+✅ **Compatible Merge Complete!**
 
-📁 **Output:** `{os.path.basename(final_output)}`
-💾 **Size:** {get_human_readable_size(output_size)}
-📐 **Resolution:** `{max_width}x{max_height}`
-🎞️ **Quality:** High (CRF 18)
+🎬 **Output:** `{os.path.basename(final_output)}`
+📊 **Size:** `{file_size}`
+⏱️ **Duration:** `{total_duration:.0f}s`
+🔄 **Mode:** Re-encoded for compatibility
 
 🎉 **Ready for upload!**
-""")
+"""
+            )
             
-            logger.info(f"✅ Complex merge successful: {final_output}")
+            logger.info(f"✅ Compatible merge completed: {final_output}")
             return final_output
+            
         else:
-            error_output = stderr.decode().strip()
-            logger.error(f"❌ Complex merge failed: {error_output}")
-            await status_message.edit_text(f"❌ **Merge Failed**\n\n`{error_output[-300:]}`")
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            logger.error(f"❌ Compatible merge failed: {error_msg}")
+            
+            await status_message.edit_text(
+                f"""
+❌ **Compatible Merge Failed**
+
+**Error:** {error_msg[:300]}...
+
+Please check your video files and try again.
+"""
+            )
             return None
             
     except Exception as e:
-        logger.error(f"❌ Complex merge exception: {e}")
-        await status_message.edit_text(f"❌ **Merge Error**\n\n`{str(e)}`")
+        logger.error(f"❌ Compatible merge exception: {e}")
+        await status_message.edit_text(
+            f"""
+❌ **Merge Error**
+
+**Error:** {str(e)}
+
+Please check your video files and try again.
+"""
+        )
         return None
 
-# Main merge functions
 async def merge_videos(video_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
-    """Main video merging function with intelligent mode selection."""
-    if not video_files or len(video_files) < 2:
-        raise ValueError("At least 2 video files required for merging")
-    
-    # Get video information
-    await smart_progress_editor(status_message, "🔍 **Analyzing video files...**")
-    
-    video_infos = []
-    for i, file_path in enumerate(video_files, 1):
-        await smart_progress_editor(status_message, f"🔍 **Analyzing video {i}/{len(video_files)}...**\n\n📁 `{os.path.basename(file_path)}`")
-        
-        info = await get_detailed_video_info(file_path)
-        if not info:
-            raise ValueError(f"Could not analyze video: {os.path.basename(file_path)}")
-        video_infos.append(info)
-    
-    # Choose merge strategy
-    is_compatible, reason = videos_are_compatible_for_fast_merge(video_infos)
-    
-    if is_compatible:
-        logger.info("🚀 Using fast merge (no re-encoding)")
-        return await fast_merge_identical_videos(video_files, user_id, status_message, video_infos, output_filename)
-    else:
-        logger.info(f"🔄 Using compatible merge: {reason}")
-        return await complex_merge_videos(video_files, user_id, status_message, video_infos, output_filename)
-
-async def merge_video_with_audio(video_file: str, audio_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
-    """Enhanced video-audio merging with beautiful progress."""
-    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-    
-    if output_filename:
-        base_name = os.path.splitext(output_filename)[0]
-        final_output = os.path.join(user_download_dir, f"{base_name}.mkv")
-    else:
-        timestamp = int(time.time())
-        final_output = os.path.join(user_download_dir, f"AudioMerged_{len(audio_files)}tracks_{timestamp}.mkv")
-    
+    """Main merge function that automatically chooses the best method."""
     try:
-        # Analyze video
-        video_info = await get_detailed_video_info(video_file)
-        if not video_info:
-            raise ValueError("Could not analyze video file")
-        
-        await smart_progress_editor(status_message, f"""
-🎵 **Starting Audio Merge**
-
-🎬 **Video:** `{os.path.basename(video_file)}`
-📊 **Duration:** `{video_info['duration']:.0f}s`
-🎵 **Audio Tracks:** `{len(audio_files)} files`
-
-⚙️ **Process:** Adding audio tracks to video
-""")
-        
-        # Build FFmpeg command
-        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y']
-        
-        # Add video input
-        cmd.extend(['-i', video_file])
-        
-        # Add audio inputs
-        for audio_file in audio_files:
-            cmd.extend(['-i', audio_file])
-        
-        # Map video stream
-        cmd.extend(['-map', '0:v'])
-        
-        # Map existing audio if present
-        if video_info['has_audio']:
-            cmd.extend(['-map', '0:a'])
-        
-        # Map all new audio streams
-        for i in range(len(audio_files)):
-            cmd.extend(['-map', f'{i+1}:a'])
-        
-        # Codec settings
-        cmd.extend([
-            '-c:v', 'copy',  # Copy video without re-encoding
-            '-c:a', 'aac',   # Re-encode audio for compatibility
-            '-b:a', '192k',  # Good quality audio
-            '-ac', '2',      # Stereo output
-            '-metadata', 'title=Audio Enhanced Video',
-            '-progress', 'pipe:2',
-            final_output
-        ])
-        
-        logger.info("🎵 Starting audio merge...")
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        # Track progress
-        await track_merge_progress(
-            process,
-            video_info['duration'],
-            status_message,
-            "Audio Merge",
-            os.path.basename(final_output)
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0 and os.path.exists(final_output):
-            output_size = os.path.getsize(final_output)
-            
-            await smart_progress_editor(status_message, f"""
-✅ **Audio Merge Completed!**
-
-📁 **Output:** `{os.path.basename(final_output)}`
-💾 **Size:** {get_human_readable_size(output_size)}
-🎵 **Audio Tracks:** `{len(audio_files) + (1 if video_info['has_audio'] else 0)} total`
-
-🎉 **Ready for upload!**
-""")
-            
-            logger.info(f"✅ Audio merge successful: {final_output}")
-            return final_output
-        else:
-            error_output = stderr.decode().strip()
-            logger.error(f"❌ Audio merge failed: {error_output}")
-            await status_message.edit_text(f"❌ **Audio Merge Failed**\n\n`{error_output[-200:]}`")
+        if not video_files or len(video_files) < 2:
+            await status_message.edit_text("❌ **Error:** Need at least 2 videos to merge")
             return None
-            
-    except Exception as e:
-        logger.error(f"❌ Audio merge exception: {e}")
-        await status_message.edit_text(f"❌ **Audio Merge Error**\n\n`{str(e)}`")
-        return None
+        
+        # Analyze all videos
+        await status_message.edit_text(
+            f"""
+🔍 **Analyzing Videos...**
 
-async def merge_video_with_subtitles(video_file: str, subtitle_files: List[str], user_id: int, status_message, output_filename: str = None) -> Optional[str]:
-    """Enhanced video-subtitle merging."""
-    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-    
-    if output_filename:
-        base_name = os.path.splitext(output_filename)[0]
-        final_output = os.path.join(user_download_dir, f"{base_name}.mkv")
-    else:
-        timestamp = int(time.time())
-        final_output = os.path.join(user_download_dir, f"SubtitleMerged_{len(subtitle_files)}subs_{timestamp}.mkv")
-    
-    try:
-        # Analyze video
-        video_info = await get_detailed_video_info(video_file)
-        if not video_info:
-            raise ValueError("Could not analyze video file")
-        
-        await smart_progress_editor(status_message, f"""
-📝 **Starting Subtitle Merge**
-
-🎬 **Video:** `{os.path.basename(video_file)}`
-📊 **Duration:** `{video_info['duration']:.0f}s`
-📝 **Subtitles:** `{len(subtitle_files)} files`
-
-⚙️ **Process:** Embedding subtitles into video
-""")
-        
-        # Build FFmpeg command
-        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y']
-        
-        # Add video input
-        cmd.extend(['-i', video_file])
-        
-        # Add subtitle inputs
-        for sub_file in subtitle_files:
-            cmd.extend(['-i', sub_file])
-        
-        # Map video and audio streams
-        cmd.extend(['-map', '0:v'])
-        if video_info['has_audio']:
-            cmd.extend(['-map', '0:a'])
-        
-        # Map existing subtitles if present
-        if video_info['has_subtitles']:
-            cmd.extend(['-map', '0:s?'])
-        
-        # Map new subtitle streams
-        for i in range(len(subtitle_files)):
-            cmd.extend(['-map', f'{i+1}:s'])
-        
-        # Codec settings
-        cmd.extend([
-            '-c:v', 'copy',     # Copy video
-            '-c:a', 'copy',     # Copy audio
-            '-c:s', 'srt',      # Convert subtitles to SRT
-            '-metadata', 'title=Subtitle Enhanced Video',
-            '-progress', 'pipe:2',
-            final_output
-        ])
-        
-        logger.info("📝 Starting subtitle merge...")
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+📁 **Files:** `{len(video_files)} videos`
+⚡ **Status:** Getting video properties...
+"""
         )
         
-        # Track progress
-        await track_merge_progress(
-            process,
-            video_info['duration'],
-            status_message,
-            "Subtitle Merge",
-            os.path.basename(final_output)
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0 and os.path.exists(final_output):
-            output_size = os.path.getsize(final_output)
-            total_subs = len(subtitle_files) + (video_info['subtitle_streams_count'] if video_info['has_subtitles'] else 0)
+        video_infos = []
+        for i, video_file in enumerate(video_files):
+            info = await get_detailed_video_info(video_file)
+            if info:
+                video_infos.append(info)
             
-            await smart_progress_editor(status_message, f"""
-✅ **Subtitle Merge Completed!**
+            # Update progress
+            progress = (i + 1) / len(video_files)
+            await status_message.edit_text(
+                f"""
+🔍 **Analyzing Videos...**
 
-📁 **Output:** `{os.path.basename(final_output)}`
-💾 **Size:** {get_human_readable_size(output_size)}
-📝 **Subtitles:** `{total_subs} tracks embedded`
-
-🎉 **Ready for upload!**
-""")
-            
-            logger.info(f"✅ Subtitle merge successful: {final_output}")
-            return final_output
-        else:
-            error_output = stderr.decode().strip()
-            logger.error(f"❌ Subtitle merge failed: {error_output}")
-            await status_message.edit_text(f"❌ **Subtitle Merge Failed**\n\n`{error_output[-200:]}`")
+📁 **Files:** `{len(video_files)} videos`
+{get_progress_bar(progress, 20)} `{progress:.1%}`
+⚡ **Status:** Analyzing video {i+1}/{len(video_files)}
+"""
+            )
+        
+        if len(video_infos) != len(video_files):
+            await status_message.edit_text(
+                "❌ **Error:** Some video files could not be analyzed"
+            )
             return None
-            
-    except Exception as e:
-        logger.error(f"❌ Subtitle merge exception: {e}")
-        await status_message.edit_text(f"❌ **Subtitle Merge Error**\n\n`{str(e)}`")
-        return None
-
-async def extract_streams(video_file: str, user_id: int, status_message, extract_audio: bool = True, extract_subtitles: bool = True) -> Dict[str, List[str]]:
-    """Extract audio and subtitle streams from video."""
-    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-    extracted_files = {"audio": [], "subtitles": []}
-    
-    try:
-        video_info = await get_detailed_video_info(video_file)
-        if not video_info:
-            raise ValueError("Could not analyze video file")
         
-        base_name = os.path.splitext(os.path.basename(video_file))[0]
+        # Choose merge method based on compatibility
+        is_compatible, reason = videos_are_compatible_for_fast_merge(video_infos)
         
-        await smart_progress_editor(status_message, f"""
-🔍 **Starting Stream Extraction**
+        if is_compatible:
+            await status_message.edit_text(
+                f"""
+🚀 **Fast Merge Available!**
 
-🎬 **Video:** `{os.path.basename(video_file)}`
-🎵 **Audio Streams:** `{video_info['audio_streams_count']}`
-📝 **Subtitle Streams:** `{video_info['subtitle_streams_count']}`
+✅ **Compatibility:** All videos are compatible
+🎯 **Method:** Ultra-fast lossless merge
+⏱️ **Speed:** ~10x faster than re-encoding
 
-⚙️ **Extracting streams...**
-""")
-        
-        # Extract audio streams
-        if extract_audio and video_info['has_audio']:
-            audio_output = os.path.join(user_download_dir, f"{base_name}_extracted_audio.aac")
-            
-            cmd = [
-                'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
-                '-i', video_file,
-                '-vn', '-c:a', 'aac', '-b:a', '192k',
-                '-progress', 'pipe:2',
-                audio_output
-            ]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+🚀 **Starting fast merge...**
+"""
             )
-            
-            await track_merge_progress(
-                process,
-                video_info['duration'],
-                status_message,
-                "Audio Extraction",
-                f"{base_name}_audio.aac"
+            return await fast_merge_identical_videos(video_files, user_id, status_message, video_infos, output_filename)
+        else:
+            await status_message.edit_text(
+                f"""
+🔄 **Compatible Merge Required**
+
+⚠️ **Issue:** {reason}
+🎯 **Method:** Re-encoding for compatibility
+⏱️ **Note:** This will take longer but ensure quality
+
+🔄 **Starting compatible merge...**
+"""
             )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0 and os.path.exists(audio_output):
-                extracted_files["audio"].append(audio_output)
-        
-        # Extract subtitle streams
-        if extract_subtitles and video_info['has_subtitles']:
-            subs_output = os.path.join(user_download_dir, f"{base_name}_extracted_subs.srt")
-            
-            cmd = [
-                'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
-                '-i', video_file,
-                '-vn', '-an', '-c:s', 'srt',
-                subs_output
-            ]
-            
-            process = await asyncio.create_subprocess_exec(*cmd)
-            await process.wait()
-            
-            if process.returncode == 0 and os.path.exists(subs_output):
-                extracted_files["subtitles"].append(subs_output)
-        
-        # Final result
-        total_extracted = len(extracted_files["audio"]) + len(extracted_files["subtitles"])
-        
-        await smart_progress_editor(status_message, f"""
-✅ **Stream Extraction Completed!**
-
-📁 **Video:** `{os.path.basename(video_file)}`
-🎵 **Audio Files:** `{len(extracted_files["audio"])}`
-📝 **Subtitle Files:** `{len(extracted_files["subtitles"])}`
-📦 **Total Extracted:** `{total_extracted} files`
-
-🎉 **Extraction complete!**
-""")
-        
-        return extracted_files
-        
-    except Exception as e:
-        logger.error(f"❌ Stream extraction failed: {e}")
-        await status_message.edit_text(f"❌ **Stream Extraction Failed**\n\n`{str(e)}`")
-        return {"audio": [], "subtitles": []}
+            return await complex_merge_vide
