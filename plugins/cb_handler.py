@@ -4,18 +4,20 @@ import os
 import time
 import logging
 from typing import Dict, List
+
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+
 from config import config
 from utils import get_human_readable_size, get_file_type, UserSettings
 from helpers.database import database
 from helpers.merger import merge_videos, merge_video_with_audio, merge_video_with_subtitles
-from helpers.uploader import upload_to_telegram, dual_upload, generate_thumbnail
+from helpers.uploader import upload_to_telegram, dual_upload, generate_thumbnail, GofileUploader
 
 logger = logging.getLogger(__name__)
 
 # Import user data from main bot
-from bot import user_files, user_states
+from bot import user_files, user_states, app
 
 def create_upload_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Create upload options keyboard."""
@@ -32,6 +34,7 @@ def create_upload_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{user_id}")
         ]
     ]
+    
     return InlineKeyboardMarkup(keyboard)
 
 def create_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -54,9 +57,10 @@ def create_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("◀️ Back", callback_data=f"back_main_{user_id}")
         ]
     ]
+    
     return InlineKeyboardMarkup(keyboard)
 
-@Client.on_callback_query(filters.regex(r"^merge_videos_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^merge_videos_(\d+)$"))
 async def handle_merge_videos(client: Client, query: CallbackQuery):
     """Handle video merge callback."""
     try:
@@ -119,18 +123,18 @@ async def handle_merge_videos(client: Client, query: CallbackQuery):
                 await progress_message.edit_text(
                     "❌ **Merge Failed**\n\nPlease check your video files and try again."
                 )
-                
+        
         except Exception as e:
             logger.error(f"Merge error for user {user_id}: {e}")
             await progress_message.edit_text(
                 f"❌ **Merge Error**\n\n**Error:** {str(e)}"
             )
-            
+    
     except Exception as e:
         logger.error(f"Callback error: {e}")
         await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^merge_audio_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^merge_audio_(\d+)$"))
 async def handle_merge_audio(client: Client, query: CallbackQuery):
     """Handle audio merge callback."""
     try:
@@ -158,7 +162,7 @@ async def handle_merge_audio(client: Client, query: CallbackQuery):
             f"""
 🎵 **Audio Merge Starting...**
 
-🎬 **Video:** `{os.path.basename(video_files[0])}`
+🎬 **Video:** `{video_files[0]['file_name'] if isinstance(video_files[0], dict) else os.path.basename(video_files[0])}`
 🎵 **Audio Files:** `{len(audio_files)} tracks`
 ⚡ **Status:** Adding audio tracks...
 
@@ -196,18 +200,18 @@ async def handle_merge_audio(client: Client, query: CallbackQuery):
                 await progress_message.edit_text(
                     "❌ **Audio Merge Failed**\n\nPlease check your files and try again."
                 )
-                
+        
         except Exception as e:
             logger.error(f"Audio merge error for user {user_id}: {e}")
             await progress_message.edit_text(
                 f"❌ **Audio Merge Error**\n\n**Error:** {str(e)}"
             )
-            
+    
     except Exception as e:
         logger.error(f"Callback error: {e}")
         await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^merge_subs_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^merge_subs_(\d+)$"))
 async def handle_merge_subtitles(client: Client, query: CallbackQuery):
     """Handle subtitle merge callback."""
     try:
@@ -235,7 +239,7 @@ async def handle_merge_subtitles(client: Client, query: CallbackQuery):
             f"""
 📝 **Subtitle Merge Starting...**
 
-🎬 **Video:** `{os.path.basename(video_files[0])}`
+🎬 **Video:** `{video_files[0]['file_name'] if isinstance(video_files[0], dict) else os.path.basename(video_files[0])}`
 📝 **Subtitles:** `{len(subtitle_files)} files`
 ⚡ **Status:** Embedding subtitle tracks...
 
@@ -273,18 +277,18 @@ async def handle_merge_subtitles(client: Client, query: CallbackQuery):
                 await progress_message.edit_text(
                     "❌ **Subtitle Merge Failed**\n\nPlease check your files and try again."
                 )
-                
+        
         except Exception as e:
             logger.error(f"Subtitle merge error for user {user_id}: {e}")
             await progress_message.edit_text(
                 f"❌ **Subtitle Merge Error**\n\n**Error:** {str(e)}"
             )
-            
+    
     except Exception as e:
         logger.error(f"Callback error: {e}")
         await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^upload_(tg|gf|dual)_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^upload_(tg|gf|dual)_(\d+)$"))
 async def handle_upload(client: Client, query: CallbackQuery):
     """Handle upload callbacks."""
     try:
@@ -333,52 +337,77 @@ async def handle_upload(client: Client, query: CallbackQuery):
                 thumbnail = await generate_thumbnail(file_path)
             
             if upload_type == 'tg':
-                # Telegram only
+                # Upload to Telegram only
                 message = await upload_to_telegram(
-                    client, file_path, user_id, progress_callback,
-                    f"🎬 Merged by AdvancedMergeBot\n📁 {filename}",
-                    thumbnail=thumbnail
+                    client, user_id, file_path, 
+                    f"✅ **Merged by AdvancedMergeBot**\n\n📁 **File:** `{filename}`\n📊 **Size:** `{file_size}`",
+                    progress_callback, thumbnail
                 )
                 
-                await progress_message.edit_text(
-                    f"""
-✅ **Upload Complete!**
-
-📁 **File:** `{filename}`
-📤 **Uploaded to:** Telegram
-🎉 **Success:** File uploaded successfully!
-"""
-                )
-                
-            elif upload_type == 'gf':
-                # GoFile only
-                from helpers.uploader import GofileUploader
-                
-                async with GofileUploader() as uploader:
-                    result = await uploader.upload_file(file_path, progress_callback)
-                    
+                if message:
                     await progress_message.edit_text(
                         f"""
-✅ **GoFile Upload Complete!**
+✅ **Upload Complete!**
 
+📤 **Destination:** Telegram
 📁 **File:** `{filename}`
-☁️ **Uploaded to:** GoFile
-🔗 **Link:** {result['download_url'] if result else 'N/A'}
-
+📊 **Size:** `{file_size}`
 🎉 **Success:** File uploaded successfully!
+
+💡 **File sent to your chat!**
 """
                     )
-                    
+                else:
+                    await progress_message.edit_text("❌ **Upload Failed**\n\nTelegram upload error.")
+            
+            elif upload_type == 'gf':
+                # Upload to GoFile only
+                gofile_uploader = GofileUploader()
+                result = await gofile_uploader.upload_file(file_path, progress_callback=progress_callback)
+                
+                if result and result.get('success'):
+                    await progress_message.edit_text(
+                        f"""
+✅ **Upload Complete!**
+
+📤 **Destination:** GoFile
+📁 **File:** `{filename}`
+📊 **Size:** `{file_size}`
+
+🔗 **Download Link:**
+`{result.get('download_page', 'N/A')}`
+
+💡 **Link copied to clipboard!**
+"""
+                    )
+                else:
+                    await progress_message.edit_text("❌ **Upload Failed**\n\nGoFile upload error.")
+            
             elif upload_type == 'dual':
-                # Both platforms
+                # Upload to both platforms
                 results = await dual_upload(
-                    client, file_path, user_id, progress_callback,
-                    f"🎬 Merged by AdvancedMergeBot\n📁 {filename}",
-                    thumbnail=thumbnail
+                    client, user_id, file_path,
+                    f"✅ **Merged by AdvancedMergeBot**\n\n📁 **File:** `{filename}`\n📊 **Size:** `{file_size}`",
+                    progress_callback, thumbnail
                 )
                 
-                # Results already handled in dual_upload
-                pass
+                success_count = sum([1 for r in [results['telegram'], results['gofile']] if r['success']])
+                
+                status_text = f"""
+✅ **Dual Upload Complete!**
+
+📁 **File:** `{filename}`
+📊 **Size:** `{file_size}`
+🎯 **Success:** `{success_count}/2 platforms`
+
+📤 **Telegram:** {'✅ Success' if results['telegram']['success'] else '❌ Failed'}
+☁️ **GoFile:** {'✅ Success' if results['gofile']['success'] else '❌ Failed'}
+"""
+                
+                if results['gofile']['success'] and results['gofile']['data']:
+                    status_text += f"\n🔗 **GoFile Link:**\n`{results['gofile']['data'].get('download_page', 'N/A')}`"
+                
+                await progress_message.edit_text(status_text)
             
             # Clean up
             try:
@@ -391,20 +420,20 @@ async def handle_upload(client: Client, query: CallbackQuery):
             # Clear user state
             if user_id in user_states:
                 del user_states[user_id]
-                
+        
         except Exception as e:
             logger.error(f"Upload error for user {user_id}: {e}")
             await progress_message.edit_text(
-                f"❌ **Upload Failed**\n\n**Error:** {str(e)}"
+                f"❌ **Upload Error**\n\n**Error:** {str(e)}"
             )
-            
+    
     except Exception as e:
-        logger.error(f"Upload callback error: {e}")
-        await query.answer("❌ Upload failed!", show_alert=True)
+        logger.error(f"Callback error: {e}")
+        await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^show_files_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^show_files_(\d+)$"))
 async def handle_show_files(client: Client, query: CallbackQuery):
-    """Show user's files."""
+    """Handle show files callback."""
     try:
         user_id = int(query.data.split('_')[-1])
         
@@ -414,48 +443,59 @@ async def handle_show_files(client: Client, query: CallbackQuery):
         
         files = user_files.get(user_id, {'videos': [], 'audios': [], 'subtitles': []})
         
-        text = "📁 **Your Files:**\n\n"
+        files_text = "📋 **Your Files:**\n\n"
         
         if files['videos']:
-            text += f"🎬 **Videos ({len(files['videos'])}):**\n"
-            for i, file in enumerate(files['videos'][:5], 1):
-                text += f"{i}. `{os.path.basename(file)}`\n"
+            files_text += "🎞️ **Videos:**\n"
+            for i, file_data in enumerate(files['videos'][:5], 1):
+                name = file_data['file_name'] if isinstance(file_data, dict) else os.path.basename(file_data)
+                size = file_data.get('file_size', 0) if isinstance(file_data, dict) else 0
+                files_text += f"  {i}. `{name[:30]}{'...' if len(name) > 30 else ''}` ({get_human_readable_size(size)})\n"
+            
             if len(files['videos']) > 5:
-                text += f"... and {len(files['videos']) - 5} more\n"
-            text += "\n"
+                files_text += f"  ... and {len(files['videos']) - 5} more\n"
+            files_text += "\n"
         
         if files['audios']:
-            text += f"🎵 **Audio ({len(files['audios'])}):**\n"
-            for i, file in enumerate(files['audios'][:5], 1):
-                text += f"{i}. `{os.path.basename(file)}`\n"
+            files_text += "🎵 **Audios:**\n"
+            for i, file_data in enumerate(files['audios'][:5], 1):
+                name = file_data['file_name'] if isinstance(file_data, dict) else os.path.basename(file_data)
+                size = file_data.get('file_size', 0) if isinstance(file_data, dict) else 0
+                files_text += f"  {i}. `{name[:30]}{'...' if len(name) > 30 else ''}` ({get_human_readable_size(size)})\n"
+            
             if len(files['audios']) > 5:
-                text += f"... and {len(files['audios']) - 5} more\n"
-            text += "\n"
+                files_text += f"  ... and {len(files['audios']) - 5} more\n"
+            files_text += "\n"
         
         if files['subtitles']:
-            text += f"📝 **Subtitles ({len(files['subtitles'])}):**\n"
-            for i, file in enumerate(files['subtitles'][:5], 1):
-                text += f"{i}. `{os.path.basename(file)}`\n"
+            files_text += "📝 **Subtitles:**\n"
+            for i, file_data in enumerate(files['subtitles'][:5], 1):
+                name = file_data['file_name'] if isinstance(file_data, dict) else os.path.basename(file_data)
+                size = file_data.get('file_size', 0) if isinstance(file_data, dict) else 0
+                files_text += f"  {i}. `{name[:30]}{'...' if len(name) > 30 else ''}` ({get_human_readable_size(size)})\n"
+            
             if len(files['subtitles']) > 5:
-                text += f"... and {len(files['subtitles']) - 5} more\n"
-            text += "\n"
+                files_text += f"  ... and {len(files['subtitles']) - 5} more\n"
+            files_text += "\n"
         
         if not any([files['videos'], files['audios'], files['subtitles']]):
-            text += "📭 **No files added yet.**\n\n"
-            text += "💡 **Send me files or URLs to get started!**"
+            files_text += "📭 **No files added yet!**\n\nSend me some files to get started."
         
-        keyboard = [[InlineKeyboardButton("◀️ Back to Menu", callback_data=f"back_main_{user_id}")]]
+        # Create back button
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Back to Menu", callback_data=f"back_main_{user_id}")]
+        ])
         
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.edit_text(files_text, reply_markup=keyboard)
         await query.answer()
-        
+    
     except Exception as e:
         logger.error(f"Show files error: {e}")
-        await query.answer("❌ Error showing files!", show_alert=True)
+        await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^clear_files_(\d+)$"))
+@app.on_callback_query(filters.regex(r"^clear_files_(\d+)$"))
 async def handle_clear_files(client: Client, query: CallbackQuery):
-    """Clear user's files."""
+    """Handle clear files callback."""
     try:
         user_id = int(query.data.split('_')[-1])
         
@@ -463,97 +503,43 @@ async def handle_clear_files(client: Client, query: CallbackQuery):
             await query.answer("❌ This button is not for you!", show_alert=True)
             return
         
+        # Clear user files
         if user_id in user_files:
-            # Clean up physical files
-            files = user_files[user_id]
-            all_files = files.get('videos', []) + files.get('audios', []) + files.get('subtitles', [])
-            
-            for file_path in all_files:
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except:
-                    pass
-            
-            # Clear file lists
             user_files[user_id] = {'videos': [], 'audios': [], 'subtitles': [], 'last_activity': time.time()}
         
         await query.answer("🗑️ All files cleared!", show_alert=True)
         
-        # Update main menu
+        # Go back to main menu
         from bot import create_main_keyboard
-        await query.message.edit_text(
-            """
-🎬 **AdvancedMergeBot**
-
-🗑️ **Files Cleared Successfully!**
-
-📝 **Send me new files to get started:**
-• Videos for merging
-• Audio tracks to add
-• Subtitle files to embed
-• URLs to download
-
-💡 **Ready for new operations!**
-""",
-            reply_markup=create_main_keyboard(user_id)
-        )
         
+        keyboard = create_main_keyboard(user_id)
+        
+        await query.message.edit_text(
+            f"""
+🎬 **AdvancedMergeBot Menu**
+
+📁 **Current Files:**
+🎞️ Videos: `0`
+🎵 Audios: `0`
+📝 Subtitles: `0`
+
+💡 **Quick Actions:**
+• Send files/URLs to add to collection
+• Use buttons below for merge operations
+• Check settings for customization
+""",
+            reply_markup=keyboard
+        )
+    
     except Exception as e:
         logger.error(f"Clear files error: {e}")
-        await query.answer("❌ Error clearing files!", show_alert=True)
-
-@Client.on_callback_query(filters.regex(r"^(settings|stats|close)_(\d+)$"))
-async def handle_misc_callbacks(client: Client, query: CallbackQuery):
-    """Handle miscellaneous callbacks."""
-    try:
-        action, user_id = query.data.split('_')
-        user_id = int(user_id)
-        
-        if query.from_user.id != user_id:
-            await query.answer("❌ This button is not for you!", show_alert=True)
-            return
-        
-        if action == 'settings':
-            await query.message.edit_text(
-                "⚙️ **Settings**\n\nFeature coming soon!",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("◀️ Back", callback_data=f"back_main_{user_id}")
-                ]])
-            )
-            
-        elif action == 'stats':
-            files = user_files.get(user_id, {'videos': [], 'audios': [], 'subtitles': []})
-            stats_text = f"""
-📊 **Your Statistics**
-
-📁 **Current Session:**
-🎬 Videos: `{len(files['videos'])}`
-🎵 Audio: `{len(files['audios'])}`
-📝 Subtitles: `{len(files['subtitles'])}`
-
-💡 **Total Files:** `{len(files['videos']) + len(files['audios']) + len(files['subtitles'])}`
-"""
-            
-            await query.message.edit_text(
-                stats_text,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("◀️ Back", callback_data=f"back_main_{user_id}")
-                ]])
-            )
-            
-        elif action == 'close':
-            await query.message.delete()
-            await query.answer("👋 Menu closed!")
-            
-        await query.answer()
-        
-    except Exception as e:
-        logger.error(f"Misc callback error: {e}")
         await query.answer("❌ An error occurred!", show_alert=True)
 
-@Client.on_callback_query(filters.regex(r"^back_main_(\d+)$"))
-async def handle_back_to_main(client: Client, query: CallbackQuery):
-    """Handle back to main menu."""
+@app.on_callback_query(filters.regex(r"^back_main_(\d+)$"))
+async def handle_back_main(client: Client, query: CallbackQuery):
+    """Handle back to main menu callback."""
     try:
-        user_id = int(query.data
+        user_id = int(query.data.split('_')[-1])
+        
+        if query.from_user.id != user_id:
+        
