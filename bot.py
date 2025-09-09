@@ -1,4 +1,4 @@
-# bot.py - Complete main bot file with all functionality
+# bot.py - Complete Enhanced main bot file with beautiful UI and advanced features
 import asyncio
 import os
 import time
@@ -7,12 +7,14 @@ import shutil
 import psutil
 from datetime import datetime
 from typing import Dict, List, Optional
+
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardButton,
     InlineKeyboardMarkup, User
 )
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated
+
 from config import config
 from utils import (
     get_human_readable_size, get_file_type,
@@ -79,7 +81,6 @@ class AdvancedMergeBot(Client):
 
 🌟 **Ready to merge files!**
 """
-            
             await self.send_message(chat_id=int(config.OWNER), text=startup_message)
         except Exception as e:
             logger.error(f"❌ Could not send startup message: {e}")
@@ -116,7 +117,6 @@ async def is_user_authorized(user_id: int) -> bool:
     user_data = await database.get_user(user_id)
     if user_data:
         return not user_data.get('is_banned', False)
-    
     return False
 
 async def initialize_user_session(user_id: int, username: str = None):
@@ -294,40 +294,59 @@ async def menu_handler(client: Client, message: Message):
 
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_handler(client: Client, message: Message):
-    """Show bot statistics."""
+    """Show user and bot statistics."""
     user_id = message.from_user.id
     
     if not await is_user_authorized(user_id):
         return
     
-    # Get system stats
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    cpu_percent = psutil.cpu_percent()
-    
-    # Get bot stats
+    # Get user stats
+    user_data = await database.get_user(user_id)
     bot_stats = await database.get_bot_stats()
     
+    # System stats
+    cpu_percent = psutil.cpu_percent()
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
     stats_text = f"""
-📊 **Bot Statistics**
+📊 **Statistics**
 
-👥 **Users:** `{bot_stats.get('total_users', 0)}`
+👤 **Your Stats:**
+🔢 **Merges:** `{user_data.get('total_merges', 0) if user_data else 0}`
+💾 **Processed:** `{get_human_readable_size(user_data.get('total_size_processed', 0) if user_data else 0)}`
+📅 **Joined:** `{datetime.fromtimestamp(user_data.get('join_date', 0)).strftime('%Y-%m-%d') if user_data else 'Unknown'}`
+
+🤖 **Bot Stats:**
+👥 **Total Users:** `{bot_stats.get('total_users', 0)}`
 🎬 **Total Merges:** `{bot_stats.get('total_merges', 0)}`
-💾 **Data Processed:** `{get_human_readable_size(bot_stats.get('total_size', 0))}`
+💿 **Total Processed:** `{get_human_readable_size(bot_stats.get('total_size', 0))}`
 
 🖥️ **System Stats:**
-💻 **CPU:** `{cpu_percent}%`
-🧠 **Memory:** `{memory.percent}%`
-💿 **Disk:** `{disk.percent}%`
-
-⚡ **Bot Status:** Online and Ready!
+🔥 **CPU:** `{cpu_percent}%`
+🧠 **RAM:** `{memory.percent}%`
+💽 **Disk:** `{disk.percent}%`
 """
     
     await message.reply_text(stats_text, quote=True)
 
+@app.on_message(filters.command("clear") & filters.private)
+async def clear_handler(client: Client, message: Message):
+    """Clear user files."""
+    user_id = message.from_user.id
+    
+    if not await is_user_authorized(user_id):
+        return
+    
+    if user_id in user_files:
+        user_files[user_id] = {'videos': [], 'audios': [], 'subtitles': [], 'last_activity': time.time()}
+    
+    await message.reply_text("🗑️ **All files cleared!**", quote=True)
+
+# File handlers
 @app.on_message(filters.document | filters.video | filters.audio)
 async def file_handler(client: Client, message: Message):
-    """Handle file uploads."""
+    """Handle incoming files."""
     user_id = message.from_user.id
     
     if not await is_user_authorized(user_id):
@@ -335,64 +354,88 @@ async def file_handler(client: Client, message: Message):
     
     await initialize_user_session(user_id, message.from_user.username)
     
-    # Show processing message
-    status_msg = await message.reply_text("📥 **Processing file...**", quote=True)
+    # Get file info
+    file_info = None
+    file_name = ""
+    file_size = 0
     
-    try:
-        # Download file
-        async def progress_callback(text: str):
-            await status_msg.edit_text(text)
-        
-        file_path = await download_telegram_file(message, user_id, progress_callback)
-        
-        if file_path:
-            # Determine file type and add to appropriate list
-            file_type = get_file_type(os.path.basename(file_path))
-            filename = os.path.basename(file_path)
-            file_size = get_human_readable_size(os.path.getsize(file_path))
-            
-            # Add to user files
-            if file_type == 'video':
-                user_files[user_id]['videos'].append(file_path)
-            elif file_type == 'audio':
-                user_files[user_id]['audios'].append(file_path)
-            elif file_type == 'subtitle':
-                user_files[user_id]['subtitles'].append(file_path)
-            else:
-                await status_msg.edit_text(
-                    f"❌ **Unsupported file type**\n\n"
-                    f"**File:** `{filename}`\n"
-                    f"**Type:** `{file_type}`"
-                )
-                return
-            
-            # Update activity
-            user_files[user_id]['last_activity'] = time.time()
-            
-            # Show success message with menu
-            await status_msg.edit_text(
-                f"""
+    if message.document:
+        file_info = message.document
+        file_name = file_info.file_name or f"document_{file_info.file_id}"
+        file_size = file_info.file_size
+    elif message.video:
+        file_info = message.video
+        file_name = file_info.file_name or f"video_{file_info.file_id}.mp4"
+        file_size = file_info.file_size
+    elif message.audio:
+        file_info = message.audio
+        file_name = file_info.file_name or f"audio_{file_info.file_id}.mp3"
+        file_size = file_info.file_size
+    
+    # Check file size
+    if file_size > config.MAX_FILE_SIZE:
+        await message.reply_text(
+            f"❌ **File too large!**\n\n"
+            f"📁 **File:** `{file_name}`\n"
+            f"📊 **Size:** `{get_human_readable_size(file_size)}`\n"
+            f"⚠️ **Max allowed:** `{get_human_readable_size(config.MAX_FILE_SIZE)}`",
+            quote=True
+        )
+        return
+    
+    # Determine file type
+    file_type = get_file_type(file_name)
+    
+    if file_type == 'unknown':
+        await message.reply_text(
+            f"❌ **Unsupported file type!**\n\n"
+            f"📁 **File:** `{file_name}`\n"
+            f"🔧 **Supported:** Video, Audio, Subtitle files",
+            quote=True
+        )
+        return
+    
+    # Add to user collection
+    if user_id not in user_files:
+        user_files[user_id] = {'videos': [], 'audios': [], 'subtitles': []}
+    
+    file_data = {
+        'message': message,
+        'file_name': file_name,
+        'file_size': file_size,
+        'file_type': file_type,
+        'added_at': time.time()
+    }
+    
+    user_files[user_id][f"{file_type}s"].append(file_data)
+    user_files[user_id]['last_activity'] = time.time()
+    
+    # Send confirmation with menu
+    files = user_files[user_id]
+    confirmation_text = f"""
 ✅ **File Added Successfully!**
 
-📁 **File:** `{filename}`
-📊 **Size:** `{file_size}`
-📂 **Type:** `{file_type.title()}`
+📁 **File:** `{file_name}`
+📊 **Size:** `{get_human_readable_size(file_size)}`
+🔧 **Type:** `{file_type.title()}`
 
-🎯 **What's next?**
-• Add more files
-• Start merging operation
-• Check current files
-""",
-                reply_markup=create_main_keyboard(user_id)
-            )
-        else:
-            await status_msg.edit_text("❌ **Failed to download file**")
-            
-    except Exception as e:
-        logger.error(f"File handler error: {e}")
-        await status_msg.edit_text(f"❌ **Error:** {str(e)}")
+📋 **Your Collection:**
+🎞️ Videos: `{len(files['videos'])}`
+🎵 Audios: `{len(files['audios'])}`
+📝 Subtitles: `{len(files['subtitles'])}`
 
-@app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "menu", "stats"]))
+💡 **What's next?** Use the buttons below to merge files!
+"""
+    
+    keyboard = create_main_keyboard(user_id)
+    
+    await message.reply_text(
+        confirmation_text,
+        reply_markup=keyboard,
+        quote=True
+    )
+
+@app.on_message(filters.text & filters.private)
 async def url_handler(client: Client, message: Message):
     """Handle URL downloads."""
     user_id = message.from_user.id
@@ -402,79 +445,149 @@ async def url_handler(client: Client, message: Message):
     
     text = message.text.strip()
     
-    # Check if it's a valid URL
+    # Check if it's a URL
     if not (text.startswith('http://') or text.startswith('https://')):
+        # Check if it's a password
+        if user_id in user_states and user_states[user_id].get('waiting_for_password'):
+            # Handle password input (implement password verification logic here)
+            await message.reply_text("🔐 **Password received!** Processing...", quote=True)
+            return
+        
         await message.reply_text(
-            """
-💡 **Send me:**
-• Video files to merge
-• Audio files to add
-• Subtitle files to embed
-• URLs to download
-
-🎬 **Or use /menu to see options**
-""",
+            "❌ **Invalid input!**\n\n"
+            "Please send:\n"
+            "• Direct download URLs\n"
+            "• Video/Audio/Subtitle files\n"
+            "• Use /help for more options",
             quote=True
         )
         return
     
     await initialize_user_session(user_id, message.from_user.username)
     
-    status_msg = await message.reply_text(
-        f"""
-🔍 **URL Detected!**
-
-🔗 **URL:** `{text[:50]}{'...' if len(text) > 50 else ''}`
-⚡ **Status:** Analyzing URL...
-""",
-        quote=True
-    )
+    # Start download
+    status_msg = await message.reply_text("📥 **Starting download...**", quote=True)
     
     try:
-        # Download from URL
-        async def progress_callback(progress_text: str):
+        async def progress_callback(progress_text):
             await status_msg.edit_text(progress_text)
         
-        file_path = await download_file_from_url(text, user_id, progress_callback)
+        downloaded_file = await download_file_from_url(text, user_id, progress_callback)
         
-        if file_path:
-            # Process downloaded file same as file upload
-            file_type = get_file_type(os.path.basename(file_path))
-            filename = os.path.basename(file_path)
-            file_size = get_human_readable_size(os.path.getsize(file_path))
+        if downloaded_file:
+            # Determine file type
+            file_name = os.path.basename(downloaded_file)
+            file_type = get_file_type(file_name)
+            file_size = os.path.getsize(downloaded_file)
             
-            # Add to user files
-            if file_type == 'video':
-                user_files[user_id]['videos'].append(file_path)
-            elif file_type == 'audio':
-                user_files[user_id]['audios'].append(file_path)
-            elif file_type == 'subtitle':
-                user_files[user_id]['subtitles'].append(file_path)
+            if file_type != 'unknown':
+                # Add to collection
+                if user_id not in user_files:
+                    user_files[user_id] = {'videos': [], 'audios': [], 'subtitles': []}
+                
+                file_data = {
+                    'file_path': downloaded_file,
+                    'file_name': file_name,
+                    'file_size': file_size,
+                    'file_type': file_type,
+                    'added_at': time.time()
+                }
+                
+                user_files[user_id][f"{file_type}s"].append(file_data)
+                
+                # Success message
+                files = user_files[user_id]
+                success_text = f"""
+✅ **Download Successful!**
+
+📁 **File:** `{file_name}`
+📊 **Size:** `{get_human_readable_size(file_size)}`
+🔧 **Type:** `{file_type.title()}`
+
+📋 **Your Collection:**
+🎞️ Videos: `{len(files['videos'])}`
+🎵 Audios: `{len(files['audios'])}`
+📝 Subtitles: `{len(files['subtitles'])}`
+"""
+                
+                keyboard = create_main_keyboard(user_id)
+                await status_msg.edit_text(success_text, reply_markup=keyboard)
             else:
-                await status_msg.edit_text(
-                    f"❌ **Unsupported file type from URL**\n\n"
-                    f"**File:** `{filename}`\n"
-                    f"**Type:** `{file_type}`"
-                )
-                return
-            
-            user_files[user_id]['last_activity'] = time.time()
-            
-            await status_msg.edit_text(
-                f"""
-✅ **URL Download Complete!**
-
-📁 **File:** `{filename}`
-📊 **Size:** `{file_size}`
-📂 **Type:** `{file_type.title()}`
-
-🎯 **Ready for merge operations!**
-""",
-                reply_markup=create_main_keyboard(user_id)
-            )
+                await status_msg.edit_text("❌ **Downloaded file type not supported!**")
         else:
-            await status_msg.edit_text("❌ **Failed to download from URL**")
+            await status_msg.edit_text("❌ **Download failed!**")
             
     except Exception as e:
-        logger.error(f"URL handler error: {e}")
-        await status_msg.edit_text(f"❌ **Download Error:** {str(
+        logger.error(f"Download error for user {user_id}: {e}")
+        await status_msg.edit_text(f"❌ **Download failed!**\n\n**Error:** `{str(e)}`")
+
+# Owner commands
+@app.on_message(filters.command("ban") & filters.user(int(config.OWNER)))
+async def ban_handler(client: Client, message: Message):
+    """Ban a user."""
+    try:
+        user_id = int(message.command[1])
+        await database.ban_user(user_id)
+        await message.reply_text(f"🚫 **User {user_id} has been banned!**")
+    except (IndexError, ValueError):
+        await message.reply_text("❌ **Usage:** `/ban <user_id>`")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** `{str(e)}`")
+
+@app.on_message(filters.command("unban") & filters.user(int(config.OWNER)))
+async def unban_handler(client: Client, message: Message):
+    """Unban a user."""
+    try:
+        user_id = int(message.command[1])
+        await database.unban_user(user_id)
+        await message.reply_text(f"✅ **User {user_id} has been unbanned!**")
+    except (IndexError, ValueError):
+        await message.reply_text("❌ **Usage:** `/unban <user_id>`")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** `{str(e)}`")
+
+@app.on_message(filters.command("broadcast") & filters.user(int(config.OWNER)))
+async def broadcast_handler(client: Client, message: Message):
+    """Broadcast message to all users."""
+    if not message.reply_to_message:
+        await message.reply_text("❌ **Reply to a message to broadcast it!**")
+        return
+    
+    # Get all users from database
+    # Implementation would depend on your database structure
+    await message.reply_text("📢 **Broadcasting...** (Feature to be implemented)")
+
+# Error handler
+@app.on_message()
+async def catch_all(client: Client, message: Message):
+    """Catch all other messages."""
+    user_id = message.from_user.id
+    
+    if not await is_user_authorized(user_id):
+        return
+    
+    # Only respond to unhandled text messages
+    if message.text and not message.text.startswith('/'):
+        await message.reply_text(
+            "🤖 **I didn't understand that.**\n\n"
+            "Try:\n"
+            "• Sending video/audio files\n"
+            "• Sending download URLs\n"
+            "• Using /help for commands",
+            quote=True
+        )
+
+# Import callback handlers
+from plugins.cb_handler import *
+
+if __name__ == "__main__":
+    try:
+        # Validate configuration
+        config.validate()
+        
+        print("🚀 Starting AdvancedMergeBot...")
+        app.run()
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Failed to start bot: {e}")
