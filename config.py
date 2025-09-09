@@ -1,25 +1,26 @@
+# config.py - Enhanced configuration with validation
 import os
 from typing import Optional
 
 class Config:
-    # 🤖 Bot Configuration
+    # 🤖 Bot Configuration (Required)
     API_HASH = os.environ.get("API_HASH")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")  
-    TELEGRAM_API = os.environ.get("TELEGRAM_API")
-    OWNER = os.environ.get("OWNER")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN") 
+    TELEGRAM_API = int(os.environ.get("TELEGRAM_API", 0))
+    OWNER = int(os.environ.get("OWNER", 0))
     OWNER_USERNAME = os.environ.get("OWNER_USERNAME")
     PASSWORD = os.environ.get("PASSWORD")
     
     # 🗄️ Database Configuration
-    DATABASE_URL = os.environ.get("DATABASE_URL")
+    DATABASE_URL = os.environ.get("DATABASE_URL", "mongodb://localhost:27017/mergebot")
     LOGCHANNEL = os.environ.get("LOGCHANNEL")
     
-    # 📤 Upload Configuration
+    # 📤 Upload Configuration  
     GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", None)
     
     # 📁 Directory Configuration
     DOWNLOAD_DIR = "downloads"
-    TEMP_DIR = "temp"
+    TEMP_DIR = "temp" 
     USERDATA_DIR = "userdata"
     
     # ⚙️ File Configuration
@@ -46,6 +47,15 @@ class Config:
         'audio': ['mp3', 'aac', 'wav', 'flac', 'm4a', 'ogg', 'wma', 'ac3', 'dts'],
         'subtitle': ['srt', 'ass', 'vtt', 'sub', 'ssa', 'idx', 'sup']
     }
+    
+    @classmethod
+    def validate(cls):
+        """Validate required configuration"""
+        required_fields = ['API_HASH', 'BOT_TOKEN', 'TELEGRAM_API', 'OWNER']
+        missing = [field for field in required_fields if not getattr(cls, field)]
+        if missing:
+            raise ValueError(f"Missing required config: {', '.join(missing)}")
+        return True
 
 # Global instance
 config = Config()
