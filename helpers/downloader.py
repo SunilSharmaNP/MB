@@ -105,117 +105,20 @@ def get_time_left(start_time: float, current: int, total: int) -> str:
     else:
         return f"⏱️ {int(remaining//3600)}h {int((remaining%3600)//60)}m"
 
-def extract_filename_from_url(url: str) -> str:
-    """Extract filename from URL with intelligent detection."""
-    try:
-        # Parse URL
-        parsed_url = urlparse(url)
-        
-        # Try to get filename from path
-        path = unquote(parsed_url.path)
-        if path and '.' in os.path.basename(path):
-            filename = os.path.basename(path)
-            # Sanitize filename
-            filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
-            if filename and '.' in filename:
-                return filename
-        
-        # Try to extract from Content-Disposition header
-        try:
-            response = requests.head(url, allow_redirects=True, timeout=10)
-            if 'content-disposition' in response.headers:
-                content_disp = response.headers['content-disposition']
-                filename_match = re.search(r'filename[^;=\n]*=(([\'"]).*?\2|[^;\n]*)', content_disp)
-                if filename_match:
-                    filename = filename_match.group(1).strip('"\'')
-                    filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
-                    if filename and '.' in filename:
-                        return filename
-        except:
-            pass
-        
-        # Fallback to generic name
-        return f"download_{int(time.time())}.bin"
-        
-    except Exception as e:
-        logger.warning(f"Could not extract filename from URL: {e}")
-        return f"download_{int(time.time())}.bin"
-
-async def download_from_gofile(url: str, user_id: int, progress_callback: Optional[Callable] = None, 
-                              custom_filename: str = None, password: str = None) -> Optional[str]:
-    """Download file from GoFile with enhanced support."""
+async def download_file_from_url(url: str, user_id: int, progress_callback: Optional[Callable] = None, custom_filename: str = None) -> Optional[str]:
+    """Download file from URL with progress tracking."""
     try:
         user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
         os.makedirs(user_download_dir, exist_ok=True)
         
-        # Extract file ID from GoFile URL
-        gofile_patterns = [
-            r'gofile\.io/d/([a-zA-Z0-9]+)',
-            r'gofile\.io/(?:download\?c=)?([a-zA-Z0-9]+)',
-        ]
+        # Special handling for GoFile URLs
+        if "gofile.io" in url.lower():
+            return await download_from_gofile(url, user_id, progress_callback, custom_filename)
         
-        file_id = None
-        for pattern in gofile_patterns:
-            match = re.search(pattern, url)
-            if match:
-                file_id = match.group(1)
-                break
-        
-        if not file_id:
-            raise DownloadError("Could not extract file ID from GoFile URL")
-        
-        # Get file info and download link
-        api_url = f"https://api.gofile.io/getContent?contentId={file_id}"
-        if password:
-            api_url += f"&password={password}"
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url) as response:
-                if response.status != 200:
-                    raise DownloadError(f"GoFile API error: HTTP {response.status}")
-                
-                data = await response.json()
-                
-                if data.get('status') != 'ok':
-                    raise DownloadError(f"GoFile API error: {data.get('message', 'Unknown error')}")
-                
-                content_data = data['data']
-                
-                # Handle folder or single file
-                if content_data.get('type') == 'folder':
-                    files = content_data.get('contents', {})
-                    if not files:
-                        raise DownloadError("No files found in GoFile folder")
-                    
-                    # Get first file
-                    first_file = next(iter(files.values()))
-                    download_url = first_file.get('link')
-                    filename = custom_filename or first_file.get('name', 'gofile_download')
-                else:
-                    download_url = content_data.get('link')
-                    filename = custom_filename or content_data.get('name', 'gofile_download')
-                
-                if not download_url:
-                    raise DownloadError("Could not get download link from GoFile")
-                
-                # Download the file
-                return await download_file_from_direct_url(
-                    download_url, user_id, progress_callback, filename
-                )
-                
-    except Exception as e:
-        logger.error(f"GoFile download error: {e}")
-        raise DownloadError(f"GoFile download failed: {str(e)}")
-
-async def download_file_from_direct_url(url: str, user_id: int, progress_callback: Optional[Callable] = None, 
-                                       filename: str = None) -> Optional[str]:
-    """Download file from direct URL."""
-    try:
-        user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-        os.makedirs(user_download_dir, exist_ok=True)
-        
-        # Get filename
-        if not filename:
+        # Get filename from URL or use custom
+        if custom_filename:
+            filename = custom_filename
+        else:
             filename = extract_filename_from_url(url)
         
         # Sanitize filename
@@ -282,118 +185,195 @@ async def download_file_from_direct_url(url: str, user_id: int, progress_callbac
                 pass
         raise DownloadError(f"URL download failed: {str(e)}")
 
-async def download_file_from_url(url: str, user_id: int, progress_callback: Optional[Callable] = None, 
-                                custom_filename: str = None, password: str = None) -> Optional[str]:
-    """Main download function with support for various URL types."""
+async def download_from_gofile(url: str, user_id: int, progress_callback: Optional[Callable] = None, custom_filename: str = None) -> Optional[str]:
+    """Download from GoFile with special handling."""
     try:
-        # Special handling for different services
-        if "gofile.io" in url.lower():
-            return await download_from_gofile(url, user_id, progress_callback, custom_filename, password)
-        elif "drive.google.com" in url.lower():
-            return await download_from_google_drive(url, user_id, progress_callback, custom_filename)
-        elif "dropbox.com" in url.lower():
-            return await download_from_dropbox(url, user_id, progress_callback, custom_filename)
-        else:
-            # Direct URL download
-            return await download_file_from_direct_url(url, user_id, progress_callback, custom_filename)
-            
-    except Exception as e:
-        logger.error(f"Download failed for {url}: {e}")
-        raise DownloadError(f"Download failed: {str(e)}")
-
-async def download_from_google_drive(url: str, user_id: int, progress_callback: Optional[Callable] = None, 
-                                   custom_filename: str = None) -> Optional[str]:
-    """Download file from Google Drive."""
-    try:
-        # Extract file ID from Google Drive URL
-        file_id_match = re.search(r'/d/([a-zA-Z0-9-_]+)', url) or re.search(r'id=([a-zA-Z0-9-_]+)', url)
-        
+        # Extract file ID from GoFile URL
+        file_id_match = re.search(r'/d/([a-zA-Z0-9]+)', url)
         if not file_id_match:
-            raise DownloadError("Could not extract file ID from Google Drive URL")
+            raise DownloadError("Invalid GoFile URL format")
         
         file_id = file_id_match.group(1)
         
-        # Use direct download URL
-        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        # Get download link via GoFile API
+        api_url = f"https://api.gofile.io/getContent?contentId={file_id}"
         
-        # For large files, we might need to handle the confirmation token
         async with aiohttp.ClientSession() as session:
-            async with session.get(download_url) as response:
-                if response.status == 200:
-                    content = await response.text()
-                    # Check if we need confirmation
-                    if 'confirm=' in content:
-                        confirm_match = re.search(r'confirm=([^&]+)', content)
-                        if confirm_match:
-                            confirm_token = confirm_match.group(1)
-                            download_url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+            async with session.get(api_url) as response:
+                if response.status != 200:
+                    raise DownloadError("Failed to get GoFile download info")
+                
+                data = await response.json()
+                
+                if data['status'] != 'ok':
+                    raise DownloadError("GoFile API error")
+                
+                content = data['data']['contents']
+                if not content:
+                    raise DownloadError("No files found in GoFile link")
+                
+                # Get first file (or specific file if needed)
+                first_file_id = list(content.keys())[0]
+                file_info = content[first_file_id]
+                
+                download_url = file_info['link']
+                filename = custom_filename or file_info['name']
+                
+                # Use regular download function
+                return await download_file_from_url(download_url, user_id, progress_callback, filename)
+                
+    except Exception as e:
+        logger.error(f"❌ GoFile download failed: {e}")
+        raise DownloadError(f"GoFile download failed: {str(e)}")
+
+def extract_filename_from_url(url: str) -> str:
+    """Extract filename from URL."""
+    try:
+        # Parse URL
+        parsed = urlparse(url)
         
-        # Download the file
-        return await download_file_from_direct_url(download_url, user_id, progress_callback, custom_filename)
+        # Get filename from path
+        filename = os.path.basename(parsed.path)
+        
+        # Decode URL encoding
+        filename = unquote(filename)
+        
+        # If no filename in path, generate one
+        if not filename or '.' not in filename:
+            # Try to get from Content-Disposition header (requires HEAD request)
+            try:
+                response = requests.head(url, timeout=10, allow_redirects=True)
+                content_disposition = response.headers.get('content-disposition', '')
+                if 'filename=' in content_disposition:
+                    filename = content_disposition.split('filename=')[1].strip('"\'')
+            except:
+                pass
+            
+            # Final fallback
+            if not filename or '.' not in filename:
+                timestamp = int(time.time())
+                filename = f"download_{timestamp}.bin"
+        
+        return filename
         
     except Exception as e:
-        logger.error(f"Google Drive download error: {e}")
-        raise DownloadError(f"Google Drive download failed: {str(e)}")
+        logger.warning(f"Could not extract filename from URL: {e}")
+        return f"download_{int(time.time())}.bin"
 
-async def download_from_dropbox(url: str, user_id: int, progress_callback: Optional[Callable] = None, 
-                               custom_filename: str = None) -> Optional[str]:
-    """Download file from Dropbox."""
+def is_supported_url(url: str) -> bool:
+    """Check if URL is supported for download."""
+    supported_domains = [
+        'gofile.io',
+        'drive.google.com',
+        'dropbox.com',
+        'mega.nz',
+        'mediafire.com',
+        'wetransfer.com',
+        'github.com',
+        'gitlab.com'
+    ]
+    
     try:
-        # Convert Dropbox share URL to direct download URL
-        if "dropbox.com" in url and "dl=0" in url:
-            download_url = url.replace("dl=0", "dl=1")
-        elif "dropbox.com" in url and "dl=1" not in url:
-            download_url = url + ("&" if "?" in url else "?") + "dl=1"
-        else:
-            download_url = url
+        parsed = urlparse(url.lower())
+        domain = parsed.netloc.replace('www.', '')
         
-        # Download the file
-        return await download_file_from_direct_url(download_url, user_id, progress_callback, custom_filename)
+        # Check if it's a direct file URL (has file extension)
+        path = parsed.path.lower()
+        file_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.mp3', '.wav', '.srt', '.ass', '.vtt']
         
-    except Exception as e:
-        logger.error(f"Dropbox download error: {e}")
-        raise DownloadError(f"Dropbox download failed: {str(e)}")
-
-# Utility functions
-def validate_url(url: str) -> bool:
-    """Validate if URL is properly formatted."""
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except:
+        if any(path.endswith(ext) for ext in file_extensions):
+            return True
+        
+        # Check supported domains
+        return any(domain.endswith(supported) for supported in supported_domains)
+        
+    except Exception:
         return False
 
-def get_file_size_from_url(url: str) -> int:
-    """Get file size from URL headers."""
+async def get_url_info(url: str) -> Dict[str, Any]:
+    """Get information about a URL without downloading."""
     try:
-        response = requests.head(url, allow_redirects=True, timeout=10)
-        return int(response.headers.get('content-length', 0))
-    except:
-        return 0
+        async with aiohttp.ClientSession() as session:
+            async with session.head(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                content_length = response.headers.get('content-length')
+                content_type = response.headers.get('content-type', '')
+                filename = extract_filename_from_url(url)
+                
+                return {
+                    'url': url,
+                    'filename': filename,
+                    'size': int(content_length) if content_length else 0,
+                    'content_type': content_type,
+                    'status_code': response.status,
+                    'is_supported': is_supported_url(url)
+                }
+                
+    except Exception as e:
+        logger.error(f"Failed to get URL info: {e}")
+        return {
+            'url': url,
+            'filename': extract_filename_from_url(url),
+            'size': 0,
+            'content_type': 'unknown',
+            'status_code': 0,
+            'is_supported': is_supported_url(url),
+            'error': str(e)
+        }
 
-async def batch_download(urls: list, user_id: int, progress_callback: Optional[Callable] = None) -> list:
-    """Download multiple files concurrently."""
-    tasks = []
-    for i, url in enumerate(urls):
-        async def download_with_progress(url, index):
-            async def url_progress(text):
-                if progress_callback:
-                    await progress_callback(f"📥 **Download {index+1}/{len(urls)}**\n\n{text}")
-            
-            return await download_file_from_url(url, user_id, url_progress)
-        
-        tasks.append(download_with_progress(url, i))
+# Utility functions for download management
+def cleanup_downloads(user_id: int, max_age_hours: int = 24):
+    """Clean up old downloaded files."""
+    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    return results
-
-# Clean up function
-def cleanup_download_files(file_paths: list):
-    """Clean up downloaded files."""
-    for file_path in file_paths:
+    if not os.path.exists(user_download_dir):
+        return
+    
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    
+    for filename in os.listdir(user_download_dir):
+        file_path = os.path.join(user_download_dir, filename)
+        
         try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"🗑️ Cleaned up: {file_path}")
+            if os.path.isfile(file_path):
+                file_age = current_time - os.path.getmtime(file_path)
+                
+                if file_age > max_age_seconds:
+                    os.remove(file_path)
+                    logger.info(f"🗑️ Cleaned up old file: {filename}")
+                    
         except Exception as e:
-            logger.warning(f"Could not clean up {file_path}: {e}")
+            logger.warning(f"Could not clean up file {filename}: {e}")
+
+def get_download_stats(user_id: int) -> Dict[str, Any]:
+    """Get download statistics for a user."""
+    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
+    
+    if not os.path.exists(user_download_dir):
+        return {
+            'total_files': 0,
+            'total_size': 0,
+            'files': []
+        }
+    
+    files = []
+    total_size = 0
+    
+    for filename in os.listdir(user_download_dir):
+        file_path = os.path.join(user_download_dir, filename)
+        
+        if os.path.isfile(file_path):
+            file_size = os.path.getsize(file_path)
+            total_size += file_size
+            
+            files.append({
+                'name': filename,
+                'size': file_size,
+                'modified': os.path.getmtime(file_path)
+            })
+    
+    return {
+        'total_files': len(files),
+        'total_size': total_size,
+        'files': files
+}
