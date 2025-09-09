@@ -17,8 +17,8 @@ def get_human_readable_size(size_bytes: int) -> str:
     
     size_names = ["B", "KB", "MB", "GB", "TB"]
     size_icons = ["📄", "📋", "💾", "💿", "🗄️"]
-    
     i = 0
+    
     while size_bytes >= 1024 and i < len(size_names) - 1:
         size_bytes /= 1024.0
         i += 1
@@ -47,7 +47,7 @@ def get_time_left(start_time: float, current: int, total: int) -> str:
     remaining_bytes = total - current
     if remaining_bytes <= 0:
         return "✅ Complete!"
-        
+    
     remaining_seconds = remaining_bytes / rate
     
     if remaining_seconds < 60:
@@ -68,14 +68,30 @@ def get_speed(start_time: float, current: int) -> str:
         return "🚀 0 B/s"
     
     speed = current / elapsed
+    
     if speed < 1024:
         return f"🐌 {speed:.1f} B/s"
     elif speed < 1024 * 1024:
-        return f"🚶 {speed / 1024:.1f} KB/s"
+        return f"🚶 {speed/1024:.1f} KB/s"
     elif speed < 10 * 1024 * 1024:
         return f"🏃 {speed / (1024 * 1024):.1f} MB/s"
     else:
         return f"🚀 {speed / (1024 * 1024):.1f} MB/s"
+
+def get_file_type(filename: str) -> str:
+    """Determine file type based on extension."""
+    from config import config
+    
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    
+    if ext in config.ALLOWED_EXTENSIONS['video']:
+        return 'video'
+    elif ext in config.ALLOWED_EXTENSIONS['audio']:
+        return 'audio' 
+    elif ext in config.ALLOWED_EXTENSIONS['subtitle']:
+        return 'subtitle'
+    else:
+        return 'unknown'
 
 async def get_video_properties(file_path: str) -> Optional[Dict[str, Any]]:
     """Get comprehensive video properties using ffprobe."""
@@ -88,11 +104,13 @@ async def get_video_properties(file_path: str) -> Optional[Dict[str, Any]]:
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
+        
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
+            logger.error(f"ffprobe failed for {file_path}: {stderr.decode()}")
             return None
-            
+        
         data = json.loads(stdout.decode())
         
         # Extract video stream info
@@ -104,171 +122,53 @@ async def get_video_properties(file_path: str) -> Optional[Dict[str, Any]]:
             return None
             
         video_stream = video_streams[0]
-        format_info = data.get('format', {})
-        
-        # Parse frame rate
-        fps_str = video_stream.get('r_frame_rate', '30/1')
-        if '/' in fps_str:
-            num, den = fps_str.split('/')
-            fps = round(float(num) / float(den), 2) if int(den) != 0 else 30.0
-        else:
-            fps = round(float(fps_str), 2)
-        
-        duration = float(format_info.get('duration', 0))
+        audio_stream = audio_streams[0] if audio_streams else None
         
         return {
-            'width': int(video_stream.get('width', 0)),
-            'height': int(video_stream.get('height', 0)),
-            'duration': duration,
-            'duration_formatted': format_duration(duration),
-            'fps': fps,
-            'bitrate': video_stream.get('bit_rate'),
-            'codec': video_stream.get('codec_name'),
-            'format': format_info.get('format_name'),
-            'size': int(format_info.get('size', 0)),
-            'video_streams': len(video_streams),
-            'audio_streams': len(audio_streams),
-            'subtitle_streams': len(subtitle_streams),
-            'has_audio': len(audio_streams) > 0,
-            'has_subtitles': len(subtitle_streams) > 0
+            'width': int(video_stream['width']),
+            'height': int(video_stream['height']),
+            'duration': float(data['format'].get('duration', 0)),
+            'fps': eval(video_stream.get('r_frame_rate', '30/1')),
+            'video_codec': video_stream.get('codec_name', ''),
+            'audio_codec': audio_stream.get('codec_name', '') if audio_stream else None,
+            'file_size': int(data['format'].get('size', 0)),
+            'bitrate': int(data['format'].get('bit_rate', 0)) if data['format'].get('bit_rate') else None,
+            'has_audio': audio_stream is not None,
+            'has_video': True,
+            'streams': {
+                'video': len(video_streams),
+                'audio': len(audio_streams), 
+                'subtitle': len(subtitle_streams)
+            }
         }
         
     except Exception as e:
-        logger.error(f"Error getting video properties: {e}")
+        logger.error(f"Failed to get video properties for {file_path}: {e}")
         return None
 
-def format_duration(seconds: float) -> str:
-    """Format duration in HH:MM:SS format."""
-    if seconds <= 0:
-        return "00:00:00"
-    
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = int(seconds % 60)
-    
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-def sanitize_filename(filename: str, max_length: int = 200) -> str:
-    """Sanitize filename for cross-platform compatibility."""
-    # Remove invalid characters
-    sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
-    
-    # Remove control characters
-    sanitized = re.sub(r'[\x00-\x1f\x7f]', '', sanitized)
-    
-    # Trim whitespace and dots
-    sanitized = sanitized.strip(' .')
-    
-    # Limit length
-    if len(sanitized) > max_length:
-        name, ext = os.path.splitext(sanitized)
-        sanitized = name[:(max_length - len(ext))] + ext
-    
-    return sanitized or "unnamed_file"
-
-def get_file_type(filename: str) -> str:
-    """Determine file type based on extension."""
-    from config import config
-    
-    ext = filename.split('.')[-1].lower()
-    
-    if ext in config.ALLOWED_EXTENSIONS['video']:
-        return 'video'
-    elif ext in config.ALLOWED_EXTENSIONS['audio']:
-        return 'audio'
-    elif ext in config.ALLOWED_EXTENSIONS['subtitle']:
-        return 'subtitle'
-    else:
-        return 'unknown'
-
-def create_progress_text(
-    title: str,
-    filename: str,
-    progress: float,
-    current_size: int,
-    total_size: int,
-    start_time: float,
-    extra_info: str = ""
-) -> str:
-    """Create beautiful progress text with emojis and formatting."""
-    
-    speed = get_speed(start_time, current_size)
-    eta = get_time_left(start_time, current_size, total_size)
-    progress_bar = get_progress_bar(progress)
+def create_progress_text(operation: str, filename: str, progress: float, speed: str = "", eta: str = "") -> str:
+    """Create formatted progress text."""
+    progress_bar = get_progress_bar(progress, 20)
     
     text = f"""
-✨ **{title}**
+🎬 **{operation}**
 
-📁 **File:** `{filename[:50]}{'...' if len(filename) > 50 else ''}`
-📊 **Size:** {get_human_readable_size(total_size)}
+📁 **File:** `{filename[:40]}{'...' if len(filename) > 40 else ''}`
 
-{progress_bar}
-
-📈 **Progress:** {get_human_readable_size(current_size)} / {get_human_readable_size(total_size)}
-{speed} | {eta}
+{progress_bar} `{progress:.1%}`
 """
     
-    if extra_info:
-        text += f"\n💡 **Info:** {extra_info}"
-    
+    if speed:
+        text += f"\n⚡ **Speed:** `{speed}`"
+    if eta:
+        text += f"\n⏰ **ETA:** `{eta}`"
+        
     return text.strip()
 
-def validate_url(url: str) -> tuple[bool, str]:
-    """Validate download URL."""
-    from urllib.parse import urlparse
-    
-    if not url or not isinstance(url, str):
-        return False, "Invalid URL format"
-    
-    if len(url) > 2048:
-        return False, "URL too long"
-
-    parsed_url = urlparse(url)
-    if not all([parsed_url.scheme, parsed_url.netloc]):
-        return False, "URL must have a scheme (http/https) and network location."
-    
-    if parsed_url.scheme not in ('http', 'https'):
-        return False, "URL scheme must be http or https."
-    
-    return True, "Valid"
-
-def get_filename_from_url(url: str, fallback_name: str = None) -> str:
-    """Extract filename from URL with fallbacks."""
-    from urllib.parse import urlparse, unquote
-    
-    try:
-        parsed_url = urlparse(url)
-        filename = os.path.basename(parsed_url.path)
-        filename = unquote(filename)
-        
-        if '?' in filename:
-            filename = filename.split('?')[0]
-
-        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-        filename = filename.strip(' .').strip()
-        filename = re.sub(r'[\x00-\x1f\x7f]', '', filename)
-
-        if not filename or len(filename) < 5:
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = fallback_name or f"download_{timestamp_str}.bin"
-
-        if '.' not in filename:
-            filename += '.bin'
-
-        if len(filename) > 200:
-            name, ext = os.path.splitext(filename)
-            filename = name[:(200 - len(ext))] + ext
-
-        return filename
-    except Exception as e:
-        logger.error(f"Error extracting filename: {e}")
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return fallback_name or f"download_error_{timestamp_str}.bin"
-
 class UserSettings:
-    """Enhanced user settings management."""
+    """User settings management."""
     
-    def __init__(self, user_id: int, name: str):
+    def __init__(self, user_id: int, name: str = "Unknown"):
         self.user_id = user_id
         self.name = name
         self.merge_mode = 1  # Default to video merge
@@ -288,7 +188,7 @@ class UserSettings:
         pass
     
     def save(self):
-        """Save settings to database."""
+        """Save settings to database.""" 
         # Implementation for database save
         pass
     
@@ -303,7 +203,7 @@ async def smart_progress_editor(status_message, text: str, throttle_seconds: flo
     """Smart progress editor with throttling to avoid flood limits."""
     if not status_message or not hasattr(status_message, 'chat'):
         return
-    
+        
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
     last_time = last_edit_time.get(message_key, 0)
